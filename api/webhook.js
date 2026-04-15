@@ -55,6 +55,150 @@ async function createCalendarEvent({ title, date, time, duration_minutes, locati
   return res.data;
 }
 
+// --- 記帳功能 ---
+async function saveExpense({ amount, category, note, type }) {
+  const { data, error } = await supabase.from('xlan_expenses').insert({
+    amount,
+    category,
+    note: note || null,
+    type: type || 'expense',
+  }).select();
+  if (error) throw new Error(error.message);
+  return data[0];
+}
+
+async function getExpenses(period) {
+  const now = new Date();
+  let startDate;
+
+  if (period === 'today') {
+    startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  } else if (period === 'this_week') {
+    const day = now.getDay() || 7;
+    startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day + 1);
+  } else {
+    startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+  }
+
+  const { data } = await supabase
+    .from('xlan_expenses')
+    .select('*')
+    .gte('created_at', startDate.toISOString())
+    .order('created_at', { ascending: false });
+
+  return data || [];
+}
+
+// --- LINE 下載圖片 ---
+async function downloadLineImage(messageId) {
+  const res = await fetch(`https://api-data.line.me/v2/bot/message/${messageId}/content`, {
+    headers: { Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}` },
+  });
+  if (!res.ok) throw new Error(`Failed to download image: ${res.status}`);
+  const buffer = Buffer.from(await res.arrayBuffer());
+  return buffer.toString('base64');
+}
+
+// --- Flex Message：記帳卡片 ---
+function buildExpenseFlexMessage({ amount, category, note, type, label }) {
+  const isIncome = type === 'income';
+  const color = isIncome ? '#4CAF50' : '#FF6B6B';
+  const typeText = isIncome ? '收入' : '支出';
+  const now = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+  return {
+    type: 'flex',
+    altText: `${typeText} NT$${amount} - ${category}`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: color,
+        paddingAll: '20px',
+        contents: [
+          ...(label ? [{
+            type: 'box',
+            layout: 'horizontal',
+            contents: [{
+              type: 'text',
+              text: label,
+              size: 'xxs',
+              color: '#FFFFFF',
+              weight: 'bold',
+              backgroundColor: 'rgba(0,0,0,0.2)',
+              paddingAll: '4px',
+              borderRadius: '4px',
+            }],
+            justifyContent: 'flex-end',
+          }] : []),
+          {
+            type: 'text',
+            text: typeText,
+            size: 'sm',
+            color: '#FFFFFF90',
+          },
+          {
+            type: 'text',
+            text: `NT$ ${amount.toLocaleString()}`,
+            size: 'xxl',
+            weight: 'bold',
+            color: '#FFFFFF',
+            margin: 'sm',
+          },
+          {
+            type: 'separator',
+            margin: 'lg',
+            color: '#FFFFFF30',
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'lg',
+            spacing: 'sm',
+            contents: [
+              {
+                type: 'box',
+                layout: 'horizontal',
+                contents: [
+                  { type: 'text', text: '類別', size: 'sm', color: '#FFFFFF90', flex: 2 },
+                  { type: 'text', text: category, size: 'sm', color: '#FFFFFF', flex: 5, weight: 'bold' },
+                ],
+              },
+              ...(note ? [{
+                type: 'box',
+                layout: 'horizontal',
+                contents: [
+                  { type: 'text', text: '備註', size: 'sm', color: '#FFFFFF90', flex: 2 },
+                  { type: 'text', text: note, size: 'sm', color: '#FFFFFF', flex: 5, wrap: true },
+                ],
+              }] : []),
+              {
+                type: 'box',
+                layout: 'horizontal',
+                contents: [
+                  { type: 'text', text: '時間', size: 'sm', color: '#FFFFFF90', flex: 2 },
+                  { type: 'text', text: now, size: 'sm', color: '#FFFFFF', flex: 5 },
+                ],
+              },
+            ],
+          },
+          {
+            type: 'text',
+            text: '✓ 已記錄',
+            size: 'xs',
+            color: '#FFFFFF60',
+            align: 'end',
+            margin: 'lg',
+          },
+        ],
+      },
+    },
+  };
+}
+
+// --- System Prompt ---
 const SYSTEM_PROMPT = `你是「小瀾」，香奈的專屬 AI 秘書。
 香奈是包子媽生鮮小舖的負責人，旗下有 16 個門市（中和、文山、龍潭、林口、永和、平鎮、經國、古華、南平等），
 同時負責管理 LT-ERP 系統、樂樂團購平台、各門市帳務與薪資。
@@ -81,8 +225,19 @@ const SYSTEM_PROMPT = `你是「小瀾」，香奈的專屬 AI 秘書。
 當用戶提到任何有時間或日期的行程、會議、約定、提醒，自動呼叫 create_calendar_event 建到 Google Calendar。
 建完回覆「📅 已加入行事曆：{行程名稱} / {日期時間}」。
 沒有明確日期時，詢問用戶是哪一天。
-今天是 ${new Date().toISOString().split('T')[0]}（用來推算「明天」「下週一」等相對日期）。`;
+今天是 ${new Date().toISOString().split('T')[0]}（用來推算「明天」「下週一」等相對日期）。
 
+【記帳功能】
+當用戶提到花費、消費、付款、收入、匯款等金錢相關訊息，自動呼叫 save_expense 記錄。
+類別從以下選一個最接近的：餐飲、交通、購物、娛樂、醫療、水電、薪資、業務收入、其他。
+note 填用戶的原始說法摘要。
+type 判斷：花錢/付款/買東西 = expense，收到錢/營收/薪資入帳 = income。
+存完回覆格式：「💰 已記帳：{類別} NT${金額}」。
+
+當用戶問「今天花了多少」「這週收支」「這個月帳目」等，呼叫 get_expenses 查詢。
+查詢結果用條列式回覆，包含總收入、總支出、淨額、各筆明細。`;
+
+// --- Tool 定義 ---
 const SAVE_TODO_TOOL = {
   name: 'save_todo',
   description: '將待辦事項存入清單。當用戶提到任何需要去做的事情時使用。',
@@ -115,7 +270,34 @@ const CREATE_CALENDAR_EVENT_TOOL = {
   },
 };
 
-const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL];
+const SAVE_EXPENSE_TOOL = {
+  name: 'save_expense',
+  description: '記錄一筆收入或支出。當用戶提到花費、消費、付款、收入等金錢相關訊息時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      amount: { type: 'number', description: '金額，正整數' },
+      category: { type: 'string', description: '類別：餐飲、交通、購物、娛樂、醫療、水電、薪資、業務收入、其他' },
+      note: { type: 'string', description: '備註，用戶的原始說法摘要' },
+      type: { type: 'string', enum: ['expense', 'income'], description: 'expense=支出, income=收入' },
+    },
+    required: ['amount', 'category', 'type'],
+  },
+};
+
+const GET_EXPENSES_TOOL = {
+  name: 'get_expenses',
+  description: '查詢收支記錄。當用戶問「今天花了多少」「這週收支」「這個月帳目」等問題時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      period: { type: 'string', enum: ['today', 'this_week', 'this_month'], description: '查詢期間' },
+    },
+    required: ['period'],
+  },
+};
+
+const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL];
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -126,18 +308,24 @@ function validateSignature(body, signature) {
   return hash === signature;
 }
 
-// --- LINE 回覆訊息 ---
-async function replyMessage(replyToken, text) {
+// --- LINE 回覆訊息（支援 text 或 flex message 陣列）---
+async function replyMessage(replyToken, messages) {
+  // 如果傳入的是字串，包成 text message
+  if (typeof messages === 'string') {
+    messages = [{ type: 'text', text: messages }];
+  }
+  // 如果傳入的是單一物件（非陣列），包成陣列
+  if (!Array.isArray(messages)) {
+    messages = [messages];
+  }
+
   const res = await fetch('https://api.line.me/v2/bot/message/reply', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
     },
-    body: JSON.stringify({
-      replyToken,
-      messages: [{ type: 'text', text }],
-    }),
+    body: JSON.stringify({ replyToken, messages }),
   });
   if (!res.ok) {
     const err = await res.text();
@@ -159,7 +347,6 @@ async function judgeTask(messageText) {
   });
 
   const raw = response.content[0].text.trim();
-  // 從回覆中提取 JSON
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
   if (!jsonMatch) return { is_task: false, task: null };
   try {
@@ -169,9 +356,68 @@ async function judgeTask(messageText) {
   }
 }
 
-// --- Claude API：AI 對話（支援 tool use 自動存待辦）---
-async function chatWithClaude(userId, userMessage) {
-  // 撈最近 20 則對話
+// --- 處理 tool use 結果 ---
+async function handleToolUse(block, userMessage) {
+  if (block.name === 'save_todo' && block.input.task) {
+    await supabase.from('xlan_todos').insert({
+      text: block.input.task,
+      source_message: userMessage,
+    });
+    return { result: `已存入待辦：${block.input.task}`, flexMessage: null };
+  }
+
+  if (block.name === 'create_calendar_event' && block.input.title) {
+    try {
+      await createCalendarEvent(block.input);
+      const timeStr = block.input.time ? ` ${block.input.time}` : '（全天）';
+      return { result: `已建立行事曆：${block.input.title} / ${block.input.date}${timeStr}`, flexMessage: null };
+    } catch (err) {
+      console.error('Calendar error:', err.message);
+      return { result: `行事曆建立失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'save_expense') {
+    try {
+      await saveExpense(block.input);
+      const flex = buildExpenseFlexMessage({
+        amount: block.input.amount,
+        category: block.input.category,
+        note: block.input.note,
+        type: block.input.type,
+        label: block.input._label || null,
+      });
+      return { result: `已記帳：${block.input.type === 'income' ? '收入' : '支出'} ${block.input.category} NT$${block.input.amount}`, flexMessage: flex };
+    } catch (err) {
+      console.error('Expense error:', err.message);
+      return { result: `記帳失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'get_expenses') {
+    const expenses = await getExpenses(block.input.period);
+    const periodLabel = { today: '今天', this_week: '本週', this_month: '本月' }[block.input.period] || block.input.period;
+    if (expenses.length === 0) {
+      return { result: `${periodLabel}沒有任何收支記錄。`, flexMessage: null };
+    }
+    const totalIncome = expenses.filter((e) => e.type === 'income').reduce((s, e) => s + e.amount, 0);
+    const totalExpense = expenses.filter((e) => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
+    const details = expenses.map((e) => {
+      const icon = e.type === 'income' ? '📈' : '📉';
+      const dateStr = new Date(e.created_at).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+      return `${icon} ${e.category} NT$${e.amount}${e.note ? '（' + e.note + '）' : ''} - ${dateStr}`;
+    }).join('\n');
+    return {
+      result: `${periodLabel}收支摘要：\n收入：NT$${totalIncome}\n支出：NT$${totalExpense}\n淨額：NT$${totalIncome - totalExpense}\n\n明細：\n${details}`,
+      flexMessage: null,
+    };
+  }
+
+  return { result: '未知工具', flexMessage: null };
+}
+
+// --- Claude API：AI 對話（支援 tool use）---
+async function chatWithClaude(userId, userContent, options = {}) {
   const { data: history } = await supabase
     .from('xlan_conversations')
     .select('role, content')
@@ -183,9 +429,8 @@ async function chatWithClaude(userId, userMessage) {
     role: h.role,
     content: h.content,
   }));
-  messages.push({ role: 'user', content: userMessage });
+  messages.push({ role: 'user', content: userContent });
 
-  // 第一次呼叫，帶 tool
   let response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 1024,
@@ -194,47 +439,24 @@ async function chatWithClaude(userId, userMessage) {
     messages,
   });
 
-  const savedTasks = [];
+  const flexMessages = [];
+  const userMessageText = typeof userContent === 'string' ? userContent : '(圖片訊息)';
 
-  // 處理 tool use 迴圈（可能存多個待辦）
   while (response.stop_reason === 'tool_use') {
     const toolBlocks = response.content.filter((b) => b.type === 'tool_use');
 
     const toolResults = [];
     for (const block of toolBlocks) {
-      if (block.name === 'save_todo' && block.input.task) {
-        await supabase.from('xlan_todos').insert({
-          text: block.input.task,
-          source_message: userMessage,
-        });
-        savedTasks.push(block.input.task);
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: `已存入待辦：${block.input.task}`,
-        });
-      } else if (block.name === 'create_calendar_event' && block.input.title) {
-        try {
-          const evt = await createCalendarEvent(block.input);
-          const timeStr = block.input.time ? ` ${block.input.time}` : '（全天）';
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: `已建立行事曆：${block.input.title} / ${block.input.date}${timeStr}`,
-          });
-        } catch (err) {
-          console.error('Calendar error:', err.message);
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: `行事曆建立失敗：${err.message}`,
-            is_error: true,
-          });
-        }
-      }
+      const { result, isError, flexMessage } = await handleToolUse(block, userMessageText);
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: block.id,
+        content: result,
+        ...(isError ? { is_error: true } : {}),
+      });
+      if (flexMessage) flexMessages.push(flexMessage);
     }
 
-    // 把 assistant 回應 + tool results 加入 messages，讓 Claude 繼續
     messages.push({ role: 'assistant', content: response.content });
     messages.push({ role: 'user', content: toolResults });
 
@@ -247,17 +469,15 @@ async function chatWithClaude(userId, userMessage) {
     });
   }
 
-  // 提取最終文字回覆
   const textBlock = response.content.find((b) => b.type === 'text');
   const reply = textBlock ? textBlock.text : '已處理完成！';
 
-  // 存對話記錄（只存最終文字，不存 tool 中間過程）
   await supabase.from('xlan_conversations').insert([
-    { user_id: userId, role: 'user', content: userMessage },
+    { user_id: userId, role: 'user', content: userMessageText },
     { user_id: userId, role: 'assistant', content: reply },
   ]);
 
-  return reply;
+  return { reply, flexMessages };
 }
 
 // --- 列出待辦 ---
@@ -303,82 +523,131 @@ async function completeTodo(n) {
   return `✅ 已完成：「${todo.text}」`;
 }
 
-// --- 取得 LINE 訊息內容（用 quotedMessageId 撈原文）---
-async function getQuotedMessageText(quotedMessageId) {
-  // LINE Messaging API: GET https://api.line.me/v2/bot/message/{messageId}/content
-  // 但文字訊息沒有 content endpoint，需用 quote.text（SDK 提供）
-  // 如果 event.message.quoteToken 存在但沒有原文，就回 null
-  return null;
-}
-
 // --- 檢查訊息是否有 @ 小瀾 ---
 function isMentioned(event) {
   const mention = event.message.mention;
   if (!mention || !mention.mentionees) return false;
-  // 檢查是否有 mention 到 bot 自己（type=user 且 isSelf=true，或 type=all）
   return mention.mentionees.some((m) => m.type === 'all' || m.isSelf === true);
 }
 
 // --- 群組訊息處理 ---
 async function handleGroupMessage(event) {
-  const text = event.message.text;
-  if (!text) return;
+  const msgType = event.message.type;
 
-  const mentioned = isMentioned(event);
+  if (msgType === 'text') {
+    const text = event.message.text;
+    if (!text) return;
 
-  if (mentioned) {
-    // 被 @ 時：主動回應
-    const quotedText = event.message.quotedMessage && event.message.quotedMessage.text;
-    // 要分析的內容：有 quote 就分析 quote 原文，沒有就分析整則訊息
-    const contentToAnalyze = quotedText || text;
-    // 移除 @小瀾 的 mention 文字，只留實際內容
-    const cleanedText = contentToAnalyze.replace(/@\S+/g, '').trim();
+    const mentioned = isMentioned(event);
 
-    if (!cleanedText) return;
+    if (mentioned) {
+      const quotedText = event.message.quotedMessage && event.message.quotedMessage.text;
+      const contentToAnalyze = quotedText || text;
+      const cleanedText = contentToAnalyze.replace(/@\S+/g, '').trim();
+      if (!cleanedText) return;
 
-    // 用跟私訊一樣的 AI 處理（含 tool use 自動存待辦/行事曆）
-    const userId = event.source.userId || 'group_user';
-    const reply = await chatWithClaude(userId, cleanedText);
-    await replyMessage(event.replyToken, reply);
-  } else {
-    // 沒被 @ 時：靜默監控，判斷是否為待辦
-    const result = await judgeTask(text);
-    if (result.is_task && result.task) {
-      await supabase.from('xlan_todos').insert({
-        text: result.task,
-        source_group: event.source.groupId || 'unknown',
-        source_message: text,
-      });
-      console.log('New task detected:', result.task);
+      const userId = event.source.userId || 'group_user';
+      const { reply, flexMessages } = await chatWithClaude(userId, cleanedText);
+      const messages = [];
+      if (flexMessages.length > 0) messages.push(...flexMessages);
+      if (reply) messages.push({ type: 'text', text: reply });
+      await replyMessage(event.replyToken, messages);
+    } else {
+      const result = await judgeTask(text);
+      if (result.is_task && result.task) {
+        await supabase.from('xlan_todos').insert({
+          text: result.task,
+          source_group: event.source.groupId || 'unknown',
+          source_message: text,
+        });
+        console.log('New task detected:', result.task);
+      }
     }
-    // 不回覆
   }
 }
 
 // --- 私訊處理 ---
 async function handleDirectMessage(event) {
+  const msgType = event.message.type;
+  const userId = event.source.userId;
+
+  if (msgType === 'image') {
+    // 圖片記帳
+    try {
+      const base64Data = await downloadLineImage(event.message.id);
+      const imageContent = [
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/jpeg', data: base64Data },
+        },
+        {
+          type: 'text',
+          text: '這是一張付款或匯款相關的截圖，請判讀並提取：金額、收款方/用途、日期（如果有的話），然後呼叫 save_expense 記錄這筆帳。note 請填「圖片記帳：{判讀內容摘要}」。如果看不出是記帳相關的圖片，就直接描述圖片內容。',
+        },
+      ];
+
+      const { reply, flexMessages } = await chatWithClaude(userId, imageContent);
+      // 加上「📷 圖片判讀」標籤
+      const labeledFlex = flexMessages.map((f) => {
+        if (f.contents && f.contents.body && f.contents.body.contents) {
+          // 在卡片最前面加標籤（如果 handleToolUse 沒加的話）
+          const hasLabel = f.contents.body.contents[0] && f.contents.body.contents[0].contents &&
+            f.contents.body.contents[0].contents[0] && f.contents.body.contents[0].contents[0].text === '📷 圖片判讀';
+          if (!hasLabel) {
+            f.contents.body.contents.unshift({
+              type: 'box',
+              layout: 'horizontal',
+              contents: [{
+                type: 'text',
+                text: '📷 圖片判讀',
+                size: 'xxs',
+                color: '#FFFFFF',
+                weight: 'bold',
+              }],
+              justifyContent: 'flex-end',
+            });
+          }
+        }
+        return f;
+      });
+
+      const messages = [];
+      if (labeledFlex.length > 0) messages.push(...labeledFlex);
+      if (reply) messages.push({ type: 'text', text: reply });
+      await replyMessage(event.replyToken, messages);
+    } catch (err) {
+      console.error('Image processing error:', err);
+      await replyMessage(event.replyToken, '圖片處理失敗，請稍後再試。');
+    }
+    return;
+  }
+
+  if (msgType !== 'text') return;
+
   const text = (event.message.text || '').trim();
   if (!text) return;
 
-  const userId = event.source.userId;
-  let reply;
+  let replyMessages;
 
-  // 快捷指令：列出待辦（精確匹配，避免正常對話誤觸）
+  // 快捷指令：列出待辦
   if (/^(待辦|清單|有什麼事)$/.test(text)) {
-    reply = await listTodos();
+    replyMessages = [{ type: 'text', text: await listTodos() }];
   }
   // 快捷指令：完成/刪除第N項
   else if (/^(完成|刪除)第(\d+)項$/.test(text)) {
     const match = text.match(/^(完成|刪除)第(\d+)項$/);
     const n = parseInt(match[2], 10);
-    reply = await completeTodo(n);
+    replyMessages = [{ type: 'text', text: await completeTodo(n) }];
   }
-  // 所有其他訊息：AI 處理（自動判斷是否為待辦 + 對話）
+  // AI 處理
   else {
-    reply = await chatWithClaude(userId, text);
+    const { reply, flexMessages } = await chatWithClaude(userId, text);
+    replyMessages = [];
+    if (flexMessages.length > 0) replyMessages.push(...flexMessages);
+    if (reply) replyMessages.push({ type: 'text', text: reply });
   }
 
-  await replyMessage(event.replyToken, reply);
+  await replyMessage(event.replyToken, replyMessages);
 }
 
 // --- Vercel Serverless Handler ---
@@ -391,7 +660,6 @@ module.exports = async (req, res) => {
     return res.status(405).send('Method Not Allowed');
   }
 
-  // 取得 raw body 做簽名驗證
   const chunks = [];
   for await (const chunk of req) {
     chunks.push(chunk);
@@ -414,7 +682,9 @@ module.exports = async (req, res) => {
   const events = body.events || [];
 
   for (const event of events) {
-    if (event.type !== 'message' || event.message.type !== 'text') continue;
+    if (event.type !== 'message') continue;
+    const msgType = event.message.type;
+    if (msgType !== 'text' && msgType !== 'image') continue;
 
     try {
       if (event.source.type === 'group' || event.source.type === 'room') {
