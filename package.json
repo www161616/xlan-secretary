@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "@line/bot-sdk": "^9.6.0",
     "@anthropic-ai/sdk": "^0.39.0",
-    "@supabase/supabase-js": "^2.49.4"
+    "@line/bot-sdk": "^9.6.0",
+    "@supabase/supabase-js": "^2.49.4",
+    "googleapis": "^171.4.0"
   }
 }

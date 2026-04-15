@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const Anthropic = require('@anthropic-ai/sdk');
+const { google } = require('googleapis');
 
 // --- 環境變數 ---
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
@@ -8,10 +9,51 @@ const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
+const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 
 // --- 初始化 ---
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+
+// --- Google Calendar ---
+function getCalendarClient() {
+  const oauth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
+  oauth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
+  return google.calendar({ version: 'v3', auth: oauth2Client });
+}
+
+async function createCalendarEvent({ title, date, time, duration_minutes, location, description }) {
+  const calendar = getCalendarClient();
+  const duration = duration_minutes || 60;
+
+  let event;
+  if (time) {
+    const startDateTime = `${date}T${time}:00+08:00`;
+    const endMs = new Date(`${date}T${time}:00+08:00`).getTime() + duration * 60 * 1000;
+    const endDateTime = new Date(endMs).toISOString().replace('Z', '+08:00').replace(/\.\d{3}/, '');
+    event = {
+      summary: title,
+      start: { dateTime: startDateTime, timeZone: 'Asia/Taipei' },
+      end: { dateTime: endDateTime, timeZone: 'Asia/Taipei' },
+      reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 30 }] },
+    };
+  } else {
+    event = {
+      summary: title,
+      start: { date },
+      end: { date },
+    };
+  }
+
+  if (location) event.location = location;
+  if (description) event.description = description;
+
+  const res = await calendar.events.insert({ calendarId: 'primary', requestBody: event });
+  return res.data;
+}
 
 const SYSTEM_PROMPT = `你是「小瀾」，香奈的專屬 AI 秘書。
 香奈是包子媽生鮮小舖的負責人，旗下有 16 個門市（中和、文山、龍潭、林口、永和、平鎮、經國、古華、南平等），
@@ -33,7 +75,13 @@ const SYSTEM_PROMPT = `你是「小瀾」，香奈的專屬 AI 秘書。
 
 存完之後，在回覆的最前面加上「✅ 已記錄：{待辦內容}」，然後再接你的回覆。
 如果一則訊息包含多個待辦，每個都要存，每個都要確認。
-如果訊息只是聊天、問問題、打招呼，就正常回覆，不要存待辦。`;
+如果訊息只是聊天、問問題、打招呼，就正常回覆，不要存待辦。
+
+【Google 行事曆自動記錄】
+當用戶提到任何有時間或日期的行程、會議、約定、提醒，自動呼叫 create_calendar_event 建到 Google Calendar。
+建完回覆「📅 已加入行事曆：{行程名稱} / {日期時間}」。
+沒有明確日期時，詢問用戶是哪一天。
+今天是 ${new Date().toISOString().split('T')[0]}（用來推算「明天」「下週一」等相對日期）。`;
 
 const SAVE_TODO_TOOL = {
   name: 'save_todo',
@@ -49,6 +97,25 @@ const SAVE_TODO_TOOL = {
     required: ['task'],
   },
 };
+
+const CREATE_CALENDAR_EVENT_TOOL = {
+  name: 'create_calendar_event',
+  description: '建立 Google Calendar 行程。當用戶提到有日期或時間的行程、會議、約定時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: '行程名稱' },
+      date: { type: 'string', description: '日期，格式 YYYY-MM-DD' },
+      time: { type: ['string', 'null'], description: '時間，格式 HH:MM。沒有明確時間填 null' },
+      duration_minutes: { type: 'number', description: '持續時間（分鐘），預設 60' },
+      location: { type: 'string', description: '地點（可選）' },
+      description: { type: 'string', description: '備註（可選）' },
+    },
+    required: ['title', 'date'],
+  },
+};
+
+const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL];
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -123,7 +190,7 @@ async function chatWithClaude(userId, userMessage) {
     model: 'claude-sonnet-4-6',
     max_tokens: 1024,
     system: SYSTEM_PROMPT,
-    tools: [SAVE_TODO_TOOL],
+    tools: ALL_TOOLS,
     messages,
   });
 
@@ -146,6 +213,24 @@ async function chatWithClaude(userId, userMessage) {
           tool_use_id: block.id,
           content: `已存入待辦：${block.input.task}`,
         });
+      } else if (block.name === 'create_calendar_event' && block.input.title) {
+        try {
+          const evt = await createCalendarEvent(block.input);
+          const timeStr = block.input.time ? ` ${block.input.time}` : '（全天）';
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: `已建立行事曆：${block.input.title} / ${block.input.date}${timeStr}`,
+          });
+        } catch (err) {
+          console.error('Calendar error:', err.message);
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: `行事曆建立失敗：${err.message}`,
+            is_error: true,
+          });
+        }
       }
     }
 
@@ -157,7 +242,7 @@ async function chatWithClaude(userId, userMessage) {
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       system: SYSTEM_PROMPT,
-      tools: [SAVE_TODO_TOOL],
+      tools: ALL_TOOLS,
       messages,
     });
   }
