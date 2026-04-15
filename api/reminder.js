@@ -21,120 +21,212 @@ async function pushMessage(userId, text) {
   }
 }
 
+function getTaipeiNow() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+}
+
+function getTodayStr(now) {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+// 把 "HH:MM" 轉成當天的分鐘數
+function timeToMinutes(timeStr) {
+  if (!timeStr) return -1;
+  const [h, m] = timeStr.split(':').map(Number);
+  return h * 60 + (m || 0);
+}
+
+// --- 早安摘要（9點）---
+async function buildMorningSummary(now, todayStr) {
+  const today = now.getDate();
+  const thisMonth = now.getMonth() + 1;
+  const weekdays = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
+  const weekday = weekdays[now.getDay()];
+  const dateLabel = `${thisMonth}月${today}日（${weekday}）`;
+  const sections = [];
+
+  // 今日行程
+  const { data: events } = await supabase
+    .from('xlan_events').select('*').eq('date', todayStr).order('time', { ascending: true });
+  if (events && events.length > 0) {
+    const lines = events.map(e => {
+      const loc = e.location ? `（${e.location}）` : '';
+      return `- ${e.time || '全天'} ${e.title}${loc}`;
+    });
+    sections.push(`📅 今日行程\n${lines.join('\n')}`);
+  }
+
+  // 待辦
+  const { data: todos, count } = await supabase
+    .from('xlan_todos').select('*', { count: 'exact' }).eq('done', false)
+    .order('created_at', { ascending: true }).limit(5);
+  if (todos && todos.length > 0) {
+    const total = count || todos.length;
+    const lines = todos.map(t => `- ${t.text}`);
+    let sec = `📋 待辦（共${total}項）\n${lines.join('\n')}`;
+    if (total > 5) sec += `\n...還有${total - 5}項`;
+    sections.push(sec);
+  }
+
+  // 定期付款
+  const { data: recurring } = await supabase
+    .from('xlan_recurring').select('*').eq('active', true);
+  if (recurring && recurring.length > 0) {
+    const upcoming = [];
+    for (const item of recurring) {
+      let isDue = false;
+      const dueDay = item.day_of_month;
+      if (item.frequency === 'monthly') {
+        for (let d = 0; d <= 3; d++) { if (today + d === dueDay) { isDue = true; break; } }
+      } else if (item.frequency === 'yearly' && item.month_of_year === thisMonth) {
+        for (let d = 0; d <= 3; d++) { if (today + d === dueDay) { isDue = true; break; } }
+      }
+      if (isDue) {
+        const diff = dueDay - today;
+        const when = diff === 0 ? '今天' : diff === 1 ? '明天' : diff === 2 ? '後天' : `${diff}天後`;
+        const amt = item.amount ? ` NT$${item.amount.toLocaleString()}` : '';
+        const acct = item.account === 'business' ? '（公司）' : '';
+        upcoming.push(`- ${item.title}${amt}${acct} — ${when}（${dueDay}號）`);
+      }
+    }
+    if (upcoming.length > 0) sections.push(`💰 付款提醒\n${upcoming.join('\n')}`);
+  }
+
+  if (sections.length === 0) {
+    return `☀️ 早安香奈！今天是${dateLabel}，目前沒有特別的事項，好好加油！`;
+  }
+  return `☀️ 早安香奈！今天是${dateLabel}\n\n${sections.join('\n\n')}\n\n有什麼需要我處理的嗎？`;
+}
+
+// --- 行程提前提醒（每小時）---
+async function checkUpcomingEvents(now, todayStr) {
+  const { data: events } = await supabase
+    .from('xlan_events').select('*').eq('date', todayStr).not('time', 'is', null);
+  if (!events || events.length === 0) return [];
+
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const messages = [];
+
+  for (const e of events) {
+    const eventMinutes = timeToMinutes(e.time);
+    if (eventMinutes < 0) continue;
+    const diff = eventMinutes - nowMinutes;
+    // 30~90 分鐘後的行程
+    if (diff >= 30 && diff <= 90) {
+      const loc = e.location ? `\n地點：${e.location}` : '';
+      messages.push(`⏰ 提醒：${diff}分鐘後 ${e.time} ${e.title}${loc}\n需要準備什麼嗎？`);
+    }
+  }
+  return messages;
+}
+
+// --- 行程完成追蹤（每小時）---
+async function checkFinishedEvents(now, todayStr) {
+  const { data: events } = await supabase
+    .from('xlan_events').select('*').eq('date', todayStr).not('time', 'is', null);
+  if (!events || events.length === 0) return [];
+
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const messages = [];
+
+  for (const e of events) {
+    const eventMinutes = timeToMinutes(e.time);
+    if (eventMinutes < 0) continue;
+    const diff = nowMinutes - eventMinutes;
+    // 剛結束（0~30分鐘前，假設行程1小時）
+    if (diff >= 60 && diff <= 90) {
+      messages.push(`${e.title} 應該差不多結束了，辦完了嗎？\n回覆「完成」或「延後到{時間}」`);
+    }
+  }
+  return messages;
+}
+
+// --- 自訂提醒 ---
+async function checkCustomReminders(now) {
+  const currentHour = now.getHours();
+  const { data: kvData } = await supabase
+    .from('xlan_kv').select('value').eq('key', 'custom_reminders').single();
+  if (!kvData) return null;
+
+  let reminders;
+  try { reminders = JSON.parse(kvData.value); } catch { return null; }
+  if (!Array.isArray(reminders)) return null;
+
+  const matched = reminders.find(r => r.hour === currentHour);
+  if (!matched) return null;
+
+  // 下午提醒：列出待辦
+  if (currentHour < 20) {
+    const { data: todos } = await supabase
+      .from('xlan_todos').select('text').eq('done', false)
+      .order('created_at', { ascending: true }).limit(10);
+    const items = (todos || []).map(t => `• ${t.text}`).join('\n');
+    return `📋 ${matched.label || matched.message || '提醒'}！目前待辦：\n${items || '（無待辦）'}\n\n有什麼需要處理的嗎？`;
+  }
+
+  // 晚間總結：列出今天完成+未完成
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  const { data: doneTodos } = await supabase
+    .from('xlan_todos').select('text').eq('done', true)
+    .gte('done_at', todayStart).order('done_at', { ascending: true });
+  const { data: pendingTodos } = await supabase
+    .from('xlan_todos').select('text').eq('done', false)
+    .order('created_at', { ascending: true }).limit(10);
+
+  const doneLines = (doneTodos || []).map(t => `✅ ${t.text}`).join('\n') || '（今天沒有完成項目）';
+  const pendingLines = (pendingTodos || []).map(t => `🔲 ${t.text}`).join('\n') || '（全部完成！）';
+
+  return `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n未完成：\n${pendingLines}\n\n需要延後或調整什麼嗎？`;
+}
+
+// --- Main Handler ---
 module.exports = async (req, res) => {
   try {
     const { data: kvData } = await supabase
-      .from('xlan_kv')
-      .select('value')
-      .eq('key', 'owner_line_id')
-      .single();
+      .from('xlan_kv').select('value').eq('key', 'owner_line_id').single();
 
     if (!kvData) {
       return res.status(200).json({ ok: true, message: 'no owner' });
     }
 
     const ownerLineId = kvData.value;
-    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
-    const today = now.getDate();
-    const thisMonth = now.getMonth() + 1;
-    const thisYear = now.getFullYear();
-    const weekdays = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
-    const weekday = weekdays[now.getDay()];
-    const todayStr = `${thisYear}-${String(thisMonth).padStart(2, '0')}-${String(today).padStart(2, '0')}`;
+    const now = getTaipeiNow();
+    const currentHour = now.getHours();
+    const todayStr = getTodayStr(now);
+    const sent = [];
 
-    const sections = [];
-
-    // --- 1. 今日行程 ---
-    const { data: events } = await supabase
-      .from('xlan_events')
-      .select('*')
-      .eq('date', todayStr)
-      .order('time', { ascending: true });
-
-    if (events && events.length > 0) {
-      const eventLines = events.map(e => {
-        const time = e.time || '全天';
-        const loc = e.location ? `（${e.location}）` : '';
-        return `- ${time} ${e.title}${loc}`;
-      });
-      sections.push(`📅 今日行程\n${eventLines.join('\n')}`);
+    // 1. 早安摘要（9點）
+    if (currentHour === 9) {
+      const morning = await buildMorningSummary(now, todayStr);
+      await pushMessage(ownerLineId, morning);
+      sent.push('morning');
     }
 
-    // --- 2. 待辦清單 ---
-    const { data: todos, count } = await supabase
-      .from('xlan_todos')
-      .select('*', { count: 'exact' })
-      .eq('done', false)
-      .order('created_at', { ascending: true })
-      .limit(5);
-
-    if (todos && todos.length > 0) {
-      const totalCount = count || todos.length;
-      const todoLines = todos.map(t => `- ${t.text}`);
-      let todoSection = `📋 待辦（共${totalCount}項）\n${todoLines.join('\n')}`;
-      if (totalCount > 5) {
-        todoSection += `\n...還有${totalCount - 5}項`;
-      }
-      sections.push(todoSection);
+    // 2. 行程提前提醒
+    const upcomingMsgs = await checkUpcomingEvents(now, todayStr);
+    for (const msg of upcomingMsgs) {
+      await pushMessage(ownerLineId, msg);
+      sent.push('upcoming');
     }
 
-    // --- 3. 定期付款提醒 ---
-    const { data: recurring } = await supabase
-      .from('xlan_recurring')
-      .select('*')
-      .eq('active', true);
-
-    if (recurring && recurring.length > 0) {
-      const upcoming = [];
-
-      for (const item of recurring) {
-        let isDue = false;
-        const dueDay = item.day_of_month;
-
-        if (item.frequency === 'monthly') {
-          for (let d = 0; d <= 3; d++) {
-            if (today + d === dueDay) { isDue = true; break; }
-          }
-        } else if (item.frequency === 'yearly') {
-          if (item.month_of_year === thisMonth) {
-            for (let d = 0; d <= 3; d++) {
-              if (today + d === dueDay) { isDue = true; break; }
-            }
-          }
-        }
-
-        if (isDue) {
-          const diff = dueDay - today;
-          let when;
-          if (diff === 0) when = '今天';
-          else if (diff === 1) when = '明天';
-          else if (diff === 2) when = '後天';
-          else when = `${diff}天後`;
-
-          const amountStr = item.amount ? ` NT$${item.amount.toLocaleString()}` : '';
-          const accountStr = item.account === 'business' ? '（公司）' : '';
-          upcoming.push(`- ${item.title}${amountStr}${accountStr} — ${when}（${dueDay}號）`);
-        }
-      }
-
-      if (upcoming.length > 0) {
-        sections.push(`💰 付款提醒\n${upcoming.join('\n')}`);
-      }
+    // 3. 行程完成追蹤
+    const finishedMsgs = await checkFinishedEvents(now, todayStr);
+    for (const msg of finishedMsgs) {
+      await pushMessage(ownerLineId, msg);
+      sent.push('finished');
     }
 
-    // --- 組合訊息 ---
-    const dateLabel = `${thisMonth}月${today}日（${weekday}）`;
-    let message;
-
-    if (sections.length === 0) {
-      message = `☀️ 早安香奈！今天是${dateLabel}，目前沒有特別的事項，好好加油！`;
-    } else {
-      message = `☀️ 早安香奈！今天是${dateLabel}\n\n${sections.join('\n\n')}\n\n有什麼需要我處理的嗎？`;
+    // 4. 自訂提醒
+    const customMsg = await checkCustomReminders(now);
+    if (customMsg) {
+      await pushMessage(ownerLineId, customMsg);
+      sent.push('custom');
     }
 
-    await pushMessage(ownerLineId, message);
-
-    return res.status(200).json({ ok: true, sections: sections.length });
+    return res.status(200).json({ ok: true, hour: currentHour, sent });
   } catch (err) {
     console.error('Reminder error:', err);
     return res.status(500).json({ error: err.message });

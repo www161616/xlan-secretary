@@ -79,11 +79,15 @@ xlan-secretary/
 12. **定期付款** — `save_recurring` tool，支援 monthly/yearly
 13. **Owner ID 自動儲存** — 首次私訊 upsert owner_line_id 到 xlan_kv
 14. **待辦快捷指令** — 「待辦」「清單」「完成第N項」精確匹配
+15. **自訂提醒** — `set_reminder` tool，設定每日自訂提醒時間存入 xlan_kv
 
-### 每日提醒（api/reminder.js）
+### 每小時提醒系統（api/reminder.js）
 
-- Vercel Cron Job，UTC 1:00（台灣 9:00）
-- 查詢 xlan_recurring active=true，今天或未來 3 天內到期的項目
+- Vercel Cron Job，每小時執行一次（`0 * * * *`）
+- **9 點早安摘要**：今日行程 + 待辦（前 5 筆）+ 定期付款（3 天內到期）
+- **行程提前提醒**：每小時檢查 30~90 分鐘後的行程，推送提醒
+- **行程完成追蹤**：行程結束後 60~90 分鐘推送追蹤（「辦完了嗎？」）
+- **自訂提醒**：從 xlan_kv `custom_reminders` 讀取設定，支援下午提醒/晚間總結
 - LINE Push Message 主動通知 owner
 
 ### 網頁儀表板（index.html）
@@ -107,6 +111,7 @@ xlan-secretary/
 | `save_note` | 儲存筆記 |
 | `get_notes` | 查詢筆記 |
 | `save_recurring` | 儲存定期付款提醒 |
+| `set_reminder` | 設定自訂每日提醒時間 |
 
 ## 待辦功能
 

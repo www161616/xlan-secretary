@@ -256,7 +256,15 @@ tags 根據內容自動分類，例如 ["業務","門市"]、["個人"]、["ERP"
 【定期付款】
 當用戶提到「每個月」「每年」「固定」「定期」付款或費用，呼叫 save_recurring 儲存。
 存完回覆「🔁 已設定定期提醒：{名稱} 每月{N}號 NT$\{金額\}」。
-account 判斷同記帳規則。`;
+account 判斷同記帳規則。
+
+【自訂提醒】
+當用戶說「每天X點提醒我」「下午3點提醒」等，呼叫 set_reminder 設定自訂提醒時間。
+存完回覆「⏰ 已設定：每天{hour}點我會提醒你」。
+
+【完成與延後】
+當用戶說「完成」「辦完了」「OK了」，表示最近追蹤的事項已完成，正常回覆確認。
+當用戶說「延後」「改到X點」「明天再做」，幫忙更新對應行程。`;
 
 // --- Tool 定義 ---
 const SAVE_TODO_TOOL = {
@@ -359,7 +367,20 @@ const SAVE_RECURRING_TOOL = {
   },
 };
 
-const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL];
+const SET_REMINDER_TOOL = {
+  name: 'set_reminder',
+  description: '設定自訂每日提醒時間。當用戶說「每天X點提醒我」時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      hour: { type: 'number', description: '幾點（0-23）' },
+      label: { type: 'string', description: '提醒標籤，例如「下午提醒」「晚間總結」' },
+    },
+    required: ['hour', 'label'],
+  },
+};
+
+const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL];
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -530,6 +551,26 @@ async function handleToolUse(block, userMessage) {
     } catch (err) {
       console.error('Recurring error:', err.message);
       return { result: `定期付款設定失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'set_reminder') {
+    try {
+      const { data: existing } = await supabase
+        .from('xlan_kv').select('value').eq('key', 'custom_reminders').single();
+      let reminders = [];
+      if (existing) {
+        try { reminders = JSON.parse(existing.value); } catch { reminders = []; }
+      }
+      // 移除同 hour 的舊設定
+      reminders = reminders.filter(r => r.hour !== block.input.hour);
+      reminders.push({ hour: block.input.hour, label: block.input.label });
+      reminders.sort((a, b) => a.hour - b.hour);
+      await supabase.from('xlan_kv').upsert({ key: 'custom_reminders', value: JSON.stringify(reminders) });
+      return { result: `已設定：每天${block.input.hour}點提醒（${block.input.label}）`, flexMessage: null };
+    } catch (err) {
+      console.error('Set reminder error:', err.message);
+      return { result: `設定提醒失敗：${err.message}`, isError: true, flexMessage: null };
     }
   }
 
