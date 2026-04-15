@@ -2,186 +2,211 @@
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>小瀾秘書 Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>小瀾秘書</title>
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 <style>
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family: -apple-system, 'Segoe UI', sans-serif; background:#0f1117; color:#e4e4e7; display:flex; min-height:100vh; }
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html, body { height:100%; overflow:hidden; }
+body { font-family:-apple-system,'Segoe UI',sans-serif; background:#0f0f14; color:#e4e4e7; display:flex; flex-direction:column; }
 
-/* Sidebar */
-.sidebar { width:220px; background:#1a1b23; border-right:1px solid #2a2b35; display:flex; flex-direction:column; position:fixed; height:100vh; }
-.sidebar-header { padding:20px; border-bottom:1px solid #2a2b35; }
-.sidebar-header h1 { font-size:18px; color:#8b5cf6; }
-.sidebar-header p { font-size:11px; color:#71717a; margin-top:4px; }
-.nav-item { padding:12px 20px; cursor:pointer; display:flex; align-items:center; gap:10px; font-size:14px; color:#a1a1aa; transition:all .15s; border-left:3px solid transparent; }
-.nav-item:hover { background:#2a2b35; color:#e4e4e7; }
-.nav-item.active { background:#2a2b35; color:#8b5cf6; border-left-color:#8b5cf6; }
+/* Header */
+.header { background:#16161e; padding:16px 20px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid #2a2a3a; flex-shrink:0; }
+.header .logo { font-size:18px; font-weight:700; color:#7C5CBF; }
+.header .user { font-size:12px; color:#71717a; }
 
-/* Main */
-.main { margin-left:220px; flex:1; padding:24px; }
-.page { display:none; }
+/* Pages */
+.pages { flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+.page { display:none; padding:16px; padding-bottom:80px; min-height:100%; }
 .page.active { display:block; }
-.page-title { font-size:22px; font-weight:700; margin-bottom:20px; }
+.page-title { font-size:20px; font-weight:700; margin-bottom:16px; display:flex; align-items:center; gap:8px; }
+.page-title .badge { background:#7C5CBF; color:#fff; font-size:12px; padding:2px 10px; border-radius:12px; font-weight:600; }
 
-/* Cards */
-.stat-row { display:flex; gap:16px; margin-bottom:24px; flex-wrap:wrap; }
-.stat-card { background:#1a1b23; border:1px solid #2a2b35; border-radius:12px; padding:20px; flex:1; min-width:180px; }
-.stat-card .label { font-size:12px; color:#71717a; text-transform:uppercase; letter-spacing:1px; }
-.stat-card .value { font-size:28px; font-weight:700; margin-top:8px; }
+/* Bottom Nav */
+.bottom-nav { position:fixed; bottom:0; left:0; right:0; background:#16161e; border-top:1px solid #2a2a3a; display:flex; z-index:50; padding-bottom:env(safe-area-inset-bottom); flex-shrink:0; }
+.nav-btn { flex:1; display:flex; flex-direction:column; align-items:center; padding:10px 0 8px; cursor:pointer; color:#52525b; font-size:10px; gap:4px; transition:color .15s; }
+.nav-btn .icon { font-size:22px; }
+.nav-btn.active { color:#7C5CBF; }
+
+/* Card */
+.card { background:#1a1a24; border:1px solid #2a2a3a; border-radius:14px; padding:16px; margin-bottom:10px; }
+.card-shadow { box-shadow:0 2px 8px rgba(0,0,0,.3); }
+
+/* Stat Cards */
+.stat-row { display:flex; gap:10px; margin-bottom:16px; }
+.stat-card { flex:1; background:#1a1a24; border:1px solid #2a2a3a; border-radius:14px; padding:14px; text-align:center; }
+.stat-card .label { font-size:11px; color:#71717a; }
+.stat-card .value { font-size:22px; font-weight:700; margin-top:4px; }
 .stat-card .value.green { color:#4ade80; }
 .stat-card .value.red { color:#f87171; }
 .stat-card .value.blue { color:#60a5fa; }
 
-/* Table */
-.data-table { width:100%; border-collapse:collapse; }
-.data-table th { text-align:left; padding:10px 12px; font-size:12px; color:#71717a; text-transform:uppercase; letter-spacing:1px; border-bottom:1px solid #2a2b35; }
-.data-table td { padding:10px 12px; border-bottom:1px solid #1e1f29; font-size:14px; }
-.data-table tr:hover { background:#1a1b23; }
+/* Todo Item */
+.todo-card { display:flex; align-items:flex-start; gap:14px; }
+.todo-check { width:28px; height:28px; border:2px solid #3f3f46; border-radius:8px; flex-shrink:0; margin-top:2px; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:14px; }
+.todo-check:active { background:#7C5CBF33; }
+.todo-check.done { background:#7C5CBF; border-color:#7C5CBF; color:#fff; }
+.todo-text { flex:1; font-size:15px; line-height:1.4; }
+.todo-meta { font-size:11px; color:#52525b; margin-top:4px; }
+.todo-del { color:#52525b; font-size:22px; cursor:pointer; padding:4px; }
 
-/* Todo */
-.todo-cols { display:flex; gap:24px; }
-.todo-col { flex:1; }
-.todo-col h3 { font-size:14px; color:#71717a; margin-bottom:12px; text-transform:uppercase; letter-spacing:1px; }
-.todo-item { background:#1a1b23; border:1px solid #2a2b35; border-radius:8px; padding:12px; margin-bottom:8px; display:flex; align-items:flex-start; gap:10px; }
-.todo-item .check { width:20px; height:20px; border:2px solid #3f3f46; border-radius:4px; cursor:pointer; flex-shrink:0; margin-top:2px; display:flex; align-items:center; justify-content:center; }
-.todo-item .check:hover { border-color:#8b5cf6; }
-.todo-item .check.done { background:#8b5cf6; border-color:#8b5cf6; }
-.todo-item .text { flex:1; }
-.todo-item .meta { font-size:11px; color:#52525b; margin-top:4px; }
-.todo-item .del { color:#52525b; cursor:pointer; font-size:18px; }
-.todo-item .del:hover { color:#f87171; }
+/* Collapsible */
+.collapse-header { display:flex; align-items:center; gap:8px; padding:12px 0; color:#71717a; font-size:13px; cursor:pointer; }
+.collapse-header .arrow { transition:transform .2s; }
+.collapse-header.open .arrow { transform:rotate(90deg); }
+.collapse-body { display:none; }
+.collapse-body.open { display:block; }
 
-/* Notes */
-.note-card { background:#1a1b23; border:1px solid #2a2b35; border-radius:8px; padding:16px; margin-bottom:10px; }
-.note-card .content { white-space:pre-wrap; line-height:1.5; }
-.note-card .tags { margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; }
-.note-card .tag { background:#2a2b35; color:#a78bfa; padding:2px 8px; border-radius:4px; font-size:11px; }
-.note-card .footer { display:flex; justify-content:space-between; margin-top:8px; font-size:11px; color:#52525b; }
+/* Note Card */
+.note-content { font-size:14px; line-height:1.5; white-space:pre-wrap; }
+.note-tags { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+.note-tag { background:#2a2a3a; color:#a78bfa; padding:3px 10px; border-radius:6px; font-size:11px; }
+.note-footer { display:flex; justify-content:space-between; align-items:center; margin-top:10px; }
+.note-date { font-size:11px; color:#52525b; }
+.note-del { color:#f87171; font-size:12px; cursor:pointer; padding:4px 8px; }
 
-/* Tabs */
-.tab-bar { display:flex; gap:0; margin-bottom:20px; border-bottom:1px solid #2a2b35; }
-.tab { padding:10px 20px; cursor:pointer; font-size:14px; color:#71717a; border-bottom:2px solid transparent; }
-.tab:hover { color:#e4e4e7; }
-.tab.active { color:#8b5cf6; border-bottom-color:#8b5cf6; }
+/* Tab bar */
+.tab-bar { display:flex; background:#1a1a24; border-radius:10px; padding:3px; margin-bottom:16px; }
+.tab { flex:1; text-align:center; padding:10px; border-radius:8px; font-size:14px; color:#71717a; cursor:pointer; font-weight:500; }
+.tab.active { background:#7C5CBF; color:#fff; }
 
 /* Controls */
-.controls { display:flex; gap:12px; margin-bottom:20px; align-items:center; flex-wrap:wrap; }
-.controls select, .controls input, .controls button { background:#1a1b23; border:1px solid #2a2b35; color:#e4e4e7; padding:8px 12px; border-radius:6px; font-size:13px; }
-.controls button { background:#8b5cf6; border:none; cursor:pointer; font-weight:600; }
-.controls button:hover { background:#7c3aed; }
-.btn-danger { background:#dc2626 !important; }
-.btn-danger:hover { background:#b91c1c !important; }
+.controls { display:flex; gap:10px; margin-bottom:16px; }
+.controls input, .controls select { flex:1; background:#1a1a24; border:1px solid #2a2a3a; color:#e4e4e7; padding:12px; border-radius:10px; font-size:14px; }
+.btn { background:#7C5CBF; color:#fff; border:none; padding:12px 20px; border-radius:10px; font-size:14px; font-weight:600; cursor:pointer; min-height:48px; }
+.btn:active { background:#6a4daa; }
+.btn-sm { padding:8px 14px; font-size:12px; min-height:36px; }
+.btn-outline { background:transparent; border:1px solid #2a2a3a; color:#a1a1aa; }
+.btn-danger { background:#dc2626; }
 
-/* Recurring form */
-.form-row { display:flex; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
-.form-row label { font-size:12px; color:#71717a; display:block; margin-bottom:4px; }
-.form-row input, .form-row select { background:#1a1b23; border:1px solid #2a2b35; color:#e4e4e7; padding:8px; border-radius:6px; font-size:13px; width:100%; }
-.modal-bg { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:100; }
+/* Expense Item */
+.exp-item { display:flex; justify-content:space-between; align-items:center; padding:14px 0; border-bottom:1px solid #1e1e2a; }
+.exp-left { flex:1; }
+.exp-cat { font-size:14px; font-weight:500; }
+.exp-note { font-size:12px; color:#52525b; margin-top:2px; }
+.exp-right { text-align:right; }
+.exp-amt { font-size:16px; font-weight:700; }
+.exp-date { font-size:11px; color:#52525b; margin-top:2px; }
+
+/* Event group */
+.event-group-title { font-size:13px; color:#7C5CBF; font-weight:600; padding:10px 0 6px; border-bottom:1px solid #2a2a3a; margin-bottom:8px; margin-top:12px; }
+.event-item { display:flex; gap:12px; padding:10px 0; }
+.event-time { font-size:13px; color:#71717a; width:50px; flex-shrink:0; }
+.event-title { font-size:14px; flex:1; }
+.event-loc { font-size:12px; color:#52525b; margin-top:2px; }
+
+/* Recurring */
+.rec-card { display:flex; justify-content:space-between; align-items:center; }
+.rec-info { flex:1; }
+.rec-title { font-size:15px; font-weight:500; }
+.rec-detail { font-size:12px; color:#71717a; margin-top:4px; }
+.rec-amount { font-size:16px; font-weight:700; color:#7C5CBF; }
+.rec-actions { display:flex; gap:8px; margin-top:10px; }
+
+/* Modal */
+.modal-bg { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,.6); display:none; align-items:flex-end; justify-content:center; z-index:100; }
 .modal-bg.show { display:flex; }
-.modal { background:#1a1b23; border:1px solid #2a2b35; border-radius:12px; padding:24px; width:420px; max-width:90vw; }
-.modal h3 { margin-bottom:16px; }
+.modal { background:#1a1a24; border-top-left-radius:20px; border-top-right-radius:20px; padding:24px 20px 40px; width:100%; max-width:500px; }
+.modal h3 { margin-bottom:16px; font-size:18px; }
+.modal .form-group { margin-bottom:14px; }
+.modal .form-group label { font-size:12px; color:#71717a; display:block; margin-bottom:6px; }
+.modal .form-group input, .modal .form-group select { width:100%; background:#0f0f14; border:1px solid #2a2a3a; color:#e4e4e7; padding:12px; border-radius:10px; font-size:14px; }
+.modal .form-row { display:flex; gap:10px; }
+.modal .form-row > div { flex:1; }
+.modal .btn-row { display:flex; gap:10px; margin-top:20px; }
+.modal .btn-row .btn { flex:1; }
+
+/* Empty state */
+.empty { text-align:center; padding:40px 20px; color:#52525b; font-size:14px; }
 </style>
 </head>
 <body>
-<div class="sidebar">
-  <div class="sidebar-header">
-    <h1>小瀾秘書</h1>
-    <p>Dashboard</p>
-  </div>
-  <div class="nav-item active" onclick="switchPage('todos')">📋 待辦清單</div>
-  <div class="nav-item" onclick="switchPage('notes')">📝 記事本</div>
-  <div class="nav-item" onclick="switchPage('expenses')">💰 帳務</div>
-  <div class="nav-item" onclick="switchPage('events')">📅 行程</div>
-  <div class="nav-item" onclick="switchPage('recurring')">🔁 定期付款</div>
+
+<div class="header">
+  <div class="logo">小瀾秘書</div>
+  <div class="user" id="user-name"></div>
 </div>
 
-<div class="main">
-  <!-- 待辦清單 -->
+<div class="pages">
+  <!-- 待辦 -->
   <div id="page-todos" class="page active">
-    <div class="page-title">📋 待辦清單</div>
-    <div class="todo-cols">
-      <div class="todo-col">
-        <h3>未完成 (<span id="todo-pending-count">0</span>)</h3>
-        <div id="todo-pending"></div>
-      </div>
-      <div class="todo-col">
-        <h3>已完成</h3>
-        <div id="todo-done"></div>
-      </div>
+    <div class="page-title">待辦清單 <span class="badge" id="todo-badge">0</span></div>
+    <div id="todo-pending"></div>
+    <div class="collapse-header" id="done-header" onclick="toggleDone()">
+      <span class="arrow">&#9654;</span> 已完成
     </div>
+    <div class="collapse-body" id="done-body"></div>
   </div>
 
-  <!-- 記事本 -->
+  <!-- 記事 -->
   <div id="page-notes" class="page">
-    <div class="page-title">📝 記事本</div>
+    <div class="page-title">記事本</div>
     <div id="notes-list"></div>
   </div>
 
   <!-- 帳務 -->
   <div id="page-expenses" class="page">
-    <div class="page-title">💰 帳務</div>
-    <div class="tab-bar">
+    <div class="page-title">帳務</div>
+    <div class="tab-bar" id="exp-tabs">
       <div class="tab active" onclick="switchExpenseTab('personal')">私人</div>
       <div class="tab" onclick="switchExpenseTab('business')">公司</div>
     </div>
     <div class="controls">
       <input type="month" id="expense-month" onchange="loadExpenses()">
-      <button onclick="exportCSV()">📥 匯出 CSV</button>
+      <button class="btn btn-sm btn-outline" onclick="exportCSV()">CSV</button>
     </div>
     <div class="stat-row">
-      <div class="stat-card"><div class="label">總收入</div><div class="value green" id="exp-income">NT$ 0</div></div>
-      <div class="stat-card"><div class="label">總支出</div><div class="value red" id="exp-expense">NT$ 0</div></div>
-      <div class="stat-card"><div class="label">淨額</div><div class="value blue" id="exp-net">NT$ 0</div></div>
+      <div class="stat-card"><div class="label">收入</div><div class="value green" id="exp-income">$0</div></div>
+      <div class="stat-card"><div class="label">支出</div><div class="value red" id="exp-expense">$0</div></div>
+      <div class="stat-card"><div class="label">淨額</div><div class="value blue" id="exp-net">$0</div></div>
     </div>
-    <table class="data-table">
-      <thead><tr><th>時間</th><th>類別</th><th>備註</th><th>金額</th></tr></thead>
-      <tbody id="exp-table"></tbody>
-    </table>
+    <div id="exp-list"></div>
   </div>
 
   <!-- 行程 -->
   <div id="page-events" class="page">
-    <div class="page-title">📅 行程</div>
+    <div class="page-title">行程</div>
     <div class="controls">
       <input type="month" id="event-month" onchange="loadEvents()">
     </div>
-    <table class="data-table">
-      <thead><tr><th>日期</th><th>時間</th><th>標題</th><th>地點</th></tr></thead>
-      <tbody id="event-table"></tbody>
-    </table>
+    <div id="event-list"></div>
   </div>
 
   <!-- 定期付款 -->
   <div id="page-recurring" class="page">
-    <div class="page-title">🔁 定期付款</div>
-    <div class="controls">
-      <button onclick="showRecurringForm()">+ 新增</button>
-    </div>
-    <table class="data-table">
-      <thead><tr><th>名稱</th><th>金額</th><th>頻率</th><th>日期</th><th>帳務</th><th>操作</th></tr></thead>
-      <tbody id="recurring-table"></tbody>
-    </table>
+    <div class="page-title">定期付款</div>
+    <button class="btn" onclick="showRecurringForm()" style="width:100%;margin-bottom:16px;">+ 新增定期付款</button>
+    <div id="recurring-list"></div>
   </div>
 </div>
 
-<!-- 新增定期付款 Modal -->
+<!-- Bottom Nav -->
+<div class="bottom-nav">
+  <div class="nav-btn active" onclick="switchPage('todos')"><span class="icon">&#9745;</span>待辦</div>
+  <div class="nav-btn" onclick="switchPage('notes')"><span class="icon">&#9997;</span>記事</div>
+  <div class="nav-btn" onclick="switchPage('expenses')"><span class="icon">&#128176;</span>帳務</div>
+  <div class="nav-btn" onclick="switchPage('events')"><span class="icon">&#128197;</span>行程</div>
+  <div class="nav-btn" onclick="switchPage('recurring')"><span class="icon">&#128260;</span>定期</div>
+</div>
+
+<!-- Modal -->
 <div class="modal-bg" id="recurring-modal">
   <div class="modal">
     <h3>新增定期付款</h3>
-    <div class="form-row"><div style="flex:1"><label>名稱</label><input id="rf-title"></div></div>
+    <div class="form-group"><label>名稱</label><input id="rf-title" placeholder="例如：房租"></div>
     <div class="form-row">
-      <div style="flex:1"><label>金額</label><input id="rf-amount" type="number"></div>
-      <div style="flex:1"><label>帳務</label><select id="rf-account"><option value="personal">私人</option><option value="business">公司</option></select></div>
+      <div class="form-group"><label>金額</label><input id="rf-amount" type="number" placeholder="28000"></div>
+      <div class="form-group"><label>帳務</label><select id="rf-account"><option value="personal">私人</option><option value="business">公司</option></select></div>
     </div>
     <div class="form-row">
-      <div style="flex:1"><label>頻率</label><select id="rf-freq"><option value="monthly">每月</option><option value="yearly">每年</option></select></div>
-      <div style="flex:1"><label>幾號</label><input id="rf-day" type="number" min="1" max="31"></div>
-      <div style="flex:1"><label>幾月（年付）</label><input id="rf-month" type="number" min="1" max="12"></div>
+      <div class="form-group"><label>頻率</label><select id="rf-freq"><option value="monthly">每月</option><option value="yearly">每年</option></select></div>
+      <div class="form-group"><label>幾號</label><input id="rf-day" type="number" min="1" max="31" placeholder="5"></div>
+      <div class="form-group"><label>月份</label><input id="rf-month" type="number" min="1" max="12" placeholder="年付填"></div>
     </div>
-    <div class="form-row"><div style="flex:1"><label>備註</label><input id="rf-note"></div></div>
-    <div style="display:flex;gap:12px;margin-top:16px;">
-      <button onclick="saveRecurring()" style="background:#8b5cf6;border:none;color:#fff;padding:8px 20px;border-radius:6px;cursor:pointer;">儲存</button>
-      <button onclick="hideRecurringForm()" style="background:#2a2b35;border:none;color:#a1a1aa;padding:8px 20px;border-radius:6px;cursor:pointer;">取消</button>
+    <div class="form-group"><label>備註</label><input id="rf-note" placeholder="選填"></div>
+    <div class="btn-row">
+      <button class="btn" onclick="saveRecurring()">儲存</button>
+      <button class="btn btn-outline" onclick="hideRecurringForm()">取消</button>
     </div>
   </div>
 </div>
@@ -189,125 +214,144 @@ body { font-family: -apple-system, 'Segoe UI', sans-serif; background:#0f1117; c
 <script>
 const SB_URL = 'https://asugjynpocwygggttxyo.supabase.co/rest/v1';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFzdWdqeW5wb2N3eWdnZ3R0eHlvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzNzU3MjksImV4cCI6MjA4ODk1MTcyOX0.LzcRQAl80rZxKKD8NIYWGvylfwCbs1ek5LtKpmZodBc';
-const H = { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' };
-const HR = { 'apikey': SB_KEY, 'Authorization': 'Bearer ' + SB_KEY };
+const H = { 'apikey':SB_KEY, 'Authorization':'Bearer '+SB_KEY, 'Content-Type':'application/json', 'Prefer':'return=minimal' };
+const HR = { 'apikey':SB_KEY, 'Authorization':'Bearer '+SB_KEY };
 
-async function api(path, opts = {}) {
-  const res = await fetch(SB_URL + path, { headers: opts.body ? H : HR, ...opts });
-  if (opts.method === 'DELETE' || opts.method === 'PATCH') return null;
+async function api(path, opts={}) {
+  const res = await fetch(SB_URL+path, { headers:opts.body?H:HR, ...opts });
+  if (opts.method==='DELETE'||opts.method==='PATCH') return null;
   return res.json();
 }
 
+// --- LIFF ---
+liff.init({ liffId:'2009806013-ON2KtCsF' }).then(async () => {
+  if (liff.isLoggedIn()) {
+    try {
+      const profile = await liff.getProfile();
+      document.getElementById('user-name').textContent = profile.displayName;
+    } catch(e) { console.error('profile error', e); }
+  }
+}).catch(e => console.error('LIFF init error', e));
+
 // --- Navigation ---
+const pages = ['todos','notes','expenses','events','recurring'];
 function switchPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  document.getElementById('page-' + name).classList.add('active');
-  document.querySelectorAll('.nav-item')[['todos','notes','expenses','events','recurring'].indexOf(name)].classList.add('active');
-  if (name === 'todos') loadTodos();
-  if (name === 'notes') loadNotes();
-  if (name === 'expenses') loadExpenses();
-  if (name === 'events') loadEvents();
-  if (name === 'recurring') loadRecurring();
+  document.querySelectorAll('.nav-btn').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  document.querySelectorAll('.nav-btn')[pages.indexOf(name)].classList.add('active');
+  if (name==='todos') loadTodos();
+  if (name==='notes') loadNotes();
+  if (name==='expenses') loadExpenses();
+  if (name==='events') loadEvents();
+  if (name==='recurring') loadRecurring();
 }
 
 // --- Todos ---
 async function loadTodos() {
   const data = await api('/xlan_todos?order=created_at.asc&limit=200');
-  const pending = data.filter(t => !t.done);
-  const done = data.filter(t => t.done).slice(-30).reverse();
-  document.getElementById('todo-pending-count').textContent = pending.length;
+  const pending = data.filter(t=>!t.done);
+  const done = data.filter(t=>t.done).slice(-20).reverse();
+  document.getElementById('todo-badge').textContent = pending.length;
 
-  document.getElementById('todo-pending').innerHTML = pending.map(t => `
-    <div class="todo-item">
-      <div class="check" onclick="toggleTodo('${t.id}',true)"></div>
-      <div class="text">${esc(t.text)}<div class="meta">${t.source_group ? '群組' : '私訊'} · ${fmtDate(t.created_at)}</div></div>
-      <div class="del" onclick="delTodo('${t.id}')">&times;</div>
-    </div>`).join('') || '<div style="color:#52525b;padding:12px;">沒有待辦事項 🎉</div>';
+  document.getElementById('todo-pending').innerHTML = pending.map(t=>`
+    <div class="card card-shadow" style="margin-bottom:10px;">
+      <div class="todo-card">
+        <div class="todo-check" onclick="toggleTodo('${t.id}',true)"></div>
+        <div class="todo-text">${esc(t.text)}<div class="todo-meta">${t.source_group?'群組':'私訊'} &middot; ${fmtDate(t.created_at)}</div></div>
+        <div class="todo-del" onclick="delTodo('${t.id}')">&times;</div>
+      </div>
+    </div>`).join('') || '<div class="empty">沒有待辦事項</div>';
 
-  document.getElementById('todo-done').innerHTML = done.map(t => `
-    <div class="todo-item" style="opacity:.5;">
-      <div class="check done">✓</div>
-      <div class="text" style="text-decoration:line-through;">${esc(t.text)}<div class="meta">${fmtDate(t.done_at||t.created_at)}</div></div>
-      <div class="del" onclick="delTodo('${t.id}')">&times;</div>
+  document.getElementById('done-body').innerHTML = done.map(t=>`
+    <div class="card" style="margin-bottom:8px;opacity:.5;">
+      <div class="todo-card">
+        <div class="todo-check done">&#10003;</div>
+        <div class="todo-text" style="text-decoration:line-through;">${esc(t.text)}<div class="todo-meta">${fmtDate(t.done_at||t.created_at)}</div></div>
+      </div>
     </div>`).join('');
 }
 
-async function toggleTodo(id, done) {
-  await api('/xlan_todos?id=eq.' + id, { method: 'PATCH', body: JSON.stringify({ done, done_at: new Date().toISOString() }) });
-  loadTodos();
+let doneOpen = false;
+function toggleDone() {
+  doneOpen = !doneOpen;
+  document.getElementById('done-header').classList.toggle('open', doneOpen);
+  document.getElementById('done-body').classList.toggle('open', doneOpen);
 }
 
+async function toggleTodo(id, done) {
+  await api('/xlan_todos?id=eq.'+id, { method:'PATCH', body:JSON.stringify({ done, done_at:new Date().toISOString() }) });
+  loadTodos();
+}
 async function delTodo(id) {
   if (!confirm('確定刪除？')) return;
-  await api('/xlan_todos?id=eq.' + id, { method: 'DELETE' });
+  await api('/xlan_todos?id=eq.'+id, { method:'DELETE' });
   loadTodos();
 }
 
 // --- Notes ---
 async function loadNotes() {
   const data = await api('/xlan_notes?order=created_at.desc&limit=100');
-  document.getElementById('notes-list').innerHTML = data.map(n => `
-    <div class="note-card">
-      <div class="content">${esc(n.content)}</div>
-      <div class="tags">${(n.tags||[]).map(t=>'<span class="tag">'+esc(t)+'</span>').join('')}</div>
-      <div class="footer"><span>${fmtDate(n.created_at)}</span><span class="del" style="cursor:pointer;color:#52525b;" onclick="delNote('${n.id}')">&times; 刪除</span></div>
-    </div>`).join('') || '<div style="color:#52525b;padding:12px;">還沒有筆記</div>';
+  document.getElementById('notes-list').innerHTML = data.map(n=>{
+    const preview = n.content.length>50 ? n.content.substring(0,50)+'...' : n.content;
+    return `<div class="card card-shadow" style="margin-bottom:10px;">
+      <div class="note-content">${esc(preview)}</div>
+      <div class="note-tags">${(n.tags||[]).map(t=>'<span class="note-tag">'+esc(t)+'</span>').join('')}</div>
+      <div class="note-footer"><span class="note-date">${fmtDate(n.created_at)}</span><span class="note-del" onclick="delNote('${n.id}')">刪除</span></div>
+    </div>`;
+  }).join('') || '<div class="empty">還沒有筆記</div>';
 }
-
 async function delNote(id) {
   if (!confirm('確定刪除？')) return;
-  await api('/xlan_notes?id=eq.' + id, { method: 'DELETE' });
+  await api('/xlan_notes?id=eq.'+id, { method:'DELETE' });
   loadNotes();
 }
 
 // --- Expenses ---
-let expAccount = 'personal';
-let expData = [];
-
+let expAccount='personal', expData=[];
 function switchExpenseTab(account) {
   expAccount = account;
-  document.querySelectorAll('#page-expenses .tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('#page-expenses .tab')[account === 'personal' ? 0 : 1].classList.add('active');
+  document.querySelectorAll('#exp-tabs .tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('#exp-tabs .tab')[account==='personal'?0:1].classList.add('active');
   renderExpenses();
 }
-
 async function loadExpenses() {
   const m = document.getElementById('expense-month').value;
   if (!m) return;
-  const [y, mo] = m.split('-').map(Number);
-  const start = new Date(y, mo - 1, 1).toISOString();
-  const end = new Date(y, mo, 1).toISOString();
-  expData = await api(`/xlan_expenses?created_at=gte.${start}&created_at=lt.${end}&order=created_at.desc`);
+  const [y,mo] = m.split('-').map(Number);
+  const start = new Date(y,mo-1,1).toISOString();
+  const end = new Date(y,mo,1).toISOString();
+  expData = await api('/xlan_expenses?created_at=gte.'+start+'&created_at=lt.'+end+'&order=created_at.desc');
   renderExpenses();
 }
-
 function renderExpenses() {
-  const filtered = expData.filter(e => e.account === expAccount);
-  const income = filtered.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
-  const expense = filtered.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
-  document.getElementById('exp-income').textContent = 'NT$ ' + income.toLocaleString();
-  document.getElementById('exp-expense').textContent = 'NT$ ' + expense.toLocaleString();
-  document.getElementById('exp-net').textContent = 'NT$ ' + (income - expense).toLocaleString();
+  const filtered = expData.filter(e=>e.account===expAccount);
+  const income = filtered.filter(e=>e.type==='income').reduce((s,e)=>s+e.amount,0);
+  const expense = filtered.filter(e=>e.type==='expense').reduce((s,e)=>s+e.amount,0);
+  document.getElementById('exp-income').textContent = '$'+income.toLocaleString();
+  document.getElementById('exp-expense').textContent = '$'+expense.toLocaleString();
+  document.getElementById('exp-net').textContent = '$'+(income-expense).toLocaleString();
 
-  document.getElementById('exp-table').innerHTML = filtered.map(e => {
-    const color = e.type === 'income' ? '#4ade80' : '#f87171';
-    const sign = e.type === 'income' ? '+' : '-';
-    return `<tr><td>${fmtDate(e.created_at)}</td><td>${esc(e.category)}</td><td>${esc(e.note||'')}</td><td style="color:${color};font-weight:600;">${sign} NT$${e.amount.toLocaleString()}</td></tr>`;
-  }).join('') || '<tr><td colspan="4" style="color:#52525b;">無記錄</td></tr>';
+  document.getElementById('exp-list').innerHTML = filtered.map(e=>{
+    const color = e.type==='income'?'#4ade80':'#f87171';
+    const sign = e.type==='income'?'+':'-';
+    return `<div class="exp-item">
+      <div class="exp-left"><div class="exp-cat">${esc(e.category)}</div><div class="exp-note">${esc(e.note||'')}</div></div>
+      <div class="exp-right"><div class="exp-amt" style="color:${color}">${sign}$${e.amount.toLocaleString()}</div><div class="exp-date">${fmtDate(e.created_at)}</div></div>
+    </div>`;
+  }).join('') || '<div class="empty">無記錄</div>';
 }
-
 function exportCSV() {
-  const filtered = expData.filter(e => e.account === expAccount);
-  if (filtered.length === 0) return alert('無資料');
+  const filtered = expData.filter(e=>e.account===expAccount);
+  if (!filtered.length) return alert('無資料');
   let csv = '\uFEFF時間,類別,備註,類型,金額\n';
-  filtered.forEach(e => {
-    csv += `${fmtDate(e.created_at)},${e.category},${(e.note||'').replace(/,/g,'，')},${e.type === 'income' ? '收入' : '支出'},${e.amount}\n`;
+  filtered.forEach(e=>{
+    csv += fmtDate(e.created_at)+','+e.category+','+(e.note||'').replace(/,/g,'，')+','+(e.type==='income'?'收入':'支出')+','+e.amount+'\n';
   });
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `帳務_${expAccount}_${document.getElementById('expense-month').value}.csv`;
+  a.download = '帳務_'+expAccount+'_'+document.getElementById('expense-month').value+'.csv';
   a.click();
 }
 
@@ -315,73 +359,96 @@ function exportCSV() {
 async function loadEvents() {
   const m = document.getElementById('event-month').value;
   if (!m) return;
-  const [y, mo] = m.split('-').map(Number);
-  const startMonth = `${y}-${String(mo).padStart(2,'0')}`;
-  const data = await api(`/xlan_events?date=gte.${startMonth}-01&date=lt.${y}-${String(mo+1).padStart(2,'0')}-01&order=date.asc,time.asc`);
-  document.getElementById('event-table').innerHTML = data.map(e =>
-    `<tr><td>${e.date}</td><td>${e.time||'全天'}</td><td>${esc(e.title)}</td><td>${esc(e.location||'')}</td></tr>`
-  ).join('') || '<tr><td colspan="4" style="color:#52525b;">無行程</td></tr>';
+  const [y,mo] = m.split('-').map(Number);
+  const sm = y+'-'+String(mo).padStart(2,'0');
+  const nmo = mo===12 ? (y+1)+'-01' : y+'-'+String(mo+1).padStart(2,'0');
+  const data = await api('/xlan_events?date=gte.'+sm+'-01&date=lt.'+nmo+'-01&order=date.asc,time.asc');
+
+  if (!data.length) { document.getElementById('event-list').innerHTML='<div class="empty">無行程</div>'; return; }
+
+  // group by date
+  const groups = {};
+  data.forEach(e=>{ if(!groups[e.date]) groups[e.date]=[]; groups[e.date].push(e); });
+
+  let html = '';
+  Object.keys(groups).sort().forEach(date=>{
+    const weekday = ['日','一','二','三','四','五','六'][new Date(date).getDay()];
+    html += '<div class="event-group-title">'+date+' ('+weekday+')</div>';
+    groups[date].forEach(e=>{
+      html += '<div class="event-item"><div class="event-time">'+(e.time||'全天')+'</div><div><div class="event-title">'+esc(e.title)+'</div>'+(e.location?'<div class="event-loc">'+esc(e.location)+'</div>':'')+'</div></div>';
+    });
+  });
+  document.getElementById('event-list').innerHTML = html;
 }
 
 // --- Recurring ---
 async function loadRecurring() {
   const data = await api('/xlan_recurring?active=eq.true&order=day_of_month.asc');
-  document.getElementById('recurring-table').innerHTML = data.map(r => {
-    const freq = r.frequency === 'yearly' ? `每年${r.month_of_year}月` : '每月';
-    const acct = r.account === 'business' ? '公司' : '私人';
-    return `<tr>
-      <td>${esc(r.title)}</td>
-      <td>${r.amount ? 'NT$' + r.amount.toLocaleString() : '-'}</td>
-      <td>${freq}</td>
-      <td>${r.day_of_month}號</td>
-      <td>${acct}</td>
-      <td>
-        <span style="cursor:pointer;color:#f87171;" onclick="toggleRecurring('${r.id}')">停用</span>
-        <span style="cursor:pointer;color:#52525b;margin-left:8px;" onclick="delRecurring('${r.id}')">&times;</span>
-      </td>
-    </tr>`;
-  }).join('') || '<tr><td colspan="6" style="color:#52525b;">無定期付款</td></tr>';
+  const today = new Date();
+  const todayDate = today.getDate();
+  const todayMonth = today.getMonth()+1;
+
+  document.getElementById('recurring-list').innerHTML = data.map(r=>{
+    const freq = r.frequency==='yearly' ? '每年'+r.month_of_year+'月' : '每月';
+    const acct = r.account==='business' ? '公司' : '私人';
+
+    // 計算下次到期
+    let nextDue = '';
+    if (r.frequency==='monthly') {
+      if (r.day_of_month >= todayDate) nextDue = todayMonth+'/'+r.day_of_month;
+      else nextDue = (todayMonth%12+1)+'/'+r.day_of_month;
+    } else {
+      nextDue = r.month_of_year+'/'+r.day_of_month;
+    }
+
+    return `<div class="card card-shadow" style="margin-bottom:10px;">
+      <div class="rec-card">
+        <div class="rec-info">
+          <div class="rec-title">${esc(r.title)}</div>
+          <div class="rec-detail">${freq}${r.day_of_month}號 &middot; ${acct} &middot; 下次：${nextDue}</div>
+        </div>
+        <div class="rec-amount">${r.amount?'$'+r.amount.toLocaleString():'-'}</div>
+      </div>
+      <div class="rec-actions">
+        <button class="btn btn-sm btn-outline" onclick="toggleRecurring('${r.id}')">停用</button>
+      </div>
+    </div>`;
+  }).join('') || '<div class="empty">無定期付款</div>';
 }
 
-function showRecurringForm() { document.getElementById('recurring-modal').classList.add('show'); }
-function hideRecurringForm() { document.getElementById('recurring-modal').classList.remove('show'); }
+function showRecurringForm(){document.getElementById('recurring-modal').classList.add('show');}
+function hideRecurringForm(){document.getElementById('recurring-modal').classList.remove('show');}
 
 async function saveRecurring() {
   const body = {
-    title: document.getElementById('rf-title').value,
-    amount: parseInt(document.getElementById('rf-amount').value) || null,
-    account: document.getElementById('rf-account').value,
-    frequency: document.getElementById('rf-freq').value,
-    day_of_month: parseInt(document.getElementById('rf-day').value),
-    month_of_year: parseInt(document.getElementById('rf-month').value) || null,
-    note: document.getElementById('rf-note').value || null,
+    title:document.getElementById('rf-title').value,
+    amount:parseInt(document.getElementById('rf-amount').value)||null,
+    account:document.getElementById('rf-account').value,
+    frequency:document.getElementById('rf-freq').value,
+    day_of_month:parseInt(document.getElementById('rf-day').value),
+    month_of_year:parseInt(document.getElementById('rf-month').value)||null,
+    note:document.getElementById('rf-note').value||null,
   };
-  if (!body.title || !body.day_of_month) return alert('請填寫名稱和日期');
-  await fetch(SB_URL + '/xlan_recurring', { method: 'POST', headers: H, body: JSON.stringify(body) });
+  if (!body.title||!body.day_of_month) return alert('請填寫名稱和日期');
+  await fetch(SB_URL+'/xlan_recurring',{method:'POST',headers:H,body:JSON.stringify(body)});
   hideRecurringForm();
+  ['rf-title','rf-amount','rf-day','rf-month','rf-note'].forEach(id=>document.getElementById(id).value='');
   loadRecurring();
 }
-
 async function toggleRecurring(id) {
-  await api('/xlan_recurring?id=eq.' + id, { method: 'PATCH', body: JSON.stringify({ active: false }) });
-  loadRecurring();
-}
-
-async function delRecurring(id) {
-  if (!confirm('確定刪除？')) return;
-  await api('/xlan_recurring?id=eq.' + id, { method: 'DELETE' });
+  await api('/xlan_recurring?id=eq.'+id,{method:'PATCH',body:JSON.stringify({active:false})});
   loadRecurring();
 }
 
 // --- Utils ---
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-function fmtDate(s) { if (!s) return ''; return new Date(s).toLocaleString('zh-TW', { timeZone:'Asia/Taipei', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }); }
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+function fmtDate(s){if(!s)return'';return new Date(s).toLocaleString('zh-TW',{timeZone:'Asia/Taipei',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
 
 // --- Init ---
-const now = new Date();
-const ym = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
-document.getElementById('expense-month').value = ym;
-document.getElementById('event-month').value = ym;
+const now=new Date();
+const ym=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+document.getElementById('expense-month').value=ym;
+document.getElementById('event-month').value=ym;
 loadTodos();
 </script>
 </body>
