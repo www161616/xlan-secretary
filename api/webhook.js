@@ -303,21 +303,56 @@ async function completeTodo(n) {
   return `✅ 已完成：「${todo.text}」`;
 }
 
+// --- 取得 LINE 訊息內容（用 quotedMessageId 撈原文）---
+async function getQuotedMessageText(quotedMessageId) {
+  // LINE Messaging API: GET https://api.line.me/v2/bot/message/{messageId}/content
+  // 但文字訊息沒有 content endpoint，需用 quote.text（SDK 提供）
+  // 如果 event.message.quoteToken 存在但沒有原文，就回 null
+  return null;
+}
+
+// --- 檢查訊息是否有 @ 小瀾 ---
+function isMentioned(event) {
+  const mention = event.message.mention;
+  if (!mention || !mention.mentionees) return false;
+  // 檢查是否有 mention 到 bot 自己（type=user 且 isSelf=true，或 type=all）
+  return mention.mentionees.some((m) => m.type === 'all' || m.isSelf === true);
+}
+
 // --- 群組訊息處理 ---
 async function handleGroupMessage(event) {
   const text = event.message.text;
   if (!text) return;
 
-  const result = await judgeTask(text);
-  if (result.is_task && result.task) {
-    await supabase.from('xlan_todos').insert({
-      text: result.task,
-      source_group: event.source.groupId || 'unknown',
-      source_message: text,
-    });
-    console.log('New task detected:', result.task);
+  const mentioned = isMentioned(event);
+
+  if (mentioned) {
+    // 被 @ 時：主動回應
+    const quotedText = event.message.quotedMessage && event.message.quotedMessage.text;
+    // 要分析的內容：有 quote 就分析 quote 原文，沒有就分析整則訊息
+    const contentToAnalyze = quotedText || text;
+    // 移除 @小瀾 的 mention 文字，只留實際內容
+    const cleanedText = contentToAnalyze.replace(/@\S+/g, '').trim();
+
+    if (!cleanedText) return;
+
+    // 用跟私訊一樣的 AI 處理（含 tool use 自動存待辦/行事曆）
+    const userId = event.source.userId || 'group_user';
+    const reply = await chatWithClaude(userId, cleanedText);
+    await replyMessage(event.replyToken, reply);
+  } else {
+    // 沒被 @ 時：靜默監控，判斷是否為待辦
+    const result = await judgeTask(text);
+    if (result.is_task && result.task) {
+      await supabase.from('xlan_todos').insert({
+        text: result.task,
+        source_group: event.source.groupId || 'unknown',
+        source_message: text,
+      });
+      console.log('New task detected:', result.task);
+    }
+    // 不回覆
   }
-  // 群組不回覆
 }
 
 // --- 私訊處理 ---
