@@ -291,7 +291,16 @@ account 判斷同記帳規則。
 
 【應付款】
 當用戶說「要付XXX多少錢」「撥款給XXX」「付給龍潭XXX元」，
-呼叫 save_payable 記錄，回覆「💸 已記錄應付款：付給{to_whom} NT$\{amount\}」。`;
+呼叫 save_payable 記錄，回覆「💸 已記錄應付款：付給{to_whom} NT$\{amount\}」。
+
+【廠商管理】
+當用戶提到廠商聯絡資訊、付款條件，呼叫 save_vendor 儲存。
+當用戶問「XXX廠商電話是多少」「XXX付款條件」，呼叫 get_vendor 查詢。
+
+【專案管理】
+當用戶提到「XXX專案」並說要做哪些事，自動呼叫 create_project 建立專案並拆分工作項目。
+AI 根據專案類型自動推斷合理的工作項目。
+當用戶問「XXX做到哪了」「XXX進度」，呼叫 get_project_status。`;
 
 // --- Tool 定義 ---
 const SAVE_TODO_TOOL = {
@@ -492,7 +501,61 @@ const SAVE_PAYABLE_TOOL = {
   },
 };
 
-const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL];
+const SAVE_VENDOR_TOOL = {
+  name: 'save_vendor',
+  description: '儲存廠商資料。當用戶提到「廠商」「供應商」並說明聯絡資訊時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: '廠商名稱' },
+      contact_person: { type: 'string', description: '聯絡人' },
+      phone: { type: 'string', description: '電話' },
+      payment_terms: { type: 'string', description: '付款條件，例如「月結30天」' },
+      note: { type: 'string', description: '備註' },
+    },
+    required: ['name'],
+  },
+};
+
+const GET_VENDOR_TOOL = {
+  name: 'get_vendor',
+  description: '查詢廠商資料。當用戶問「XXX廠商的電話」「XXX付款條件」時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      keyword: { type: 'string', description: '廠商名稱關鍵字' },
+    },
+    required: ['keyword'],
+  },
+};
+
+const CREATE_PROJECT_TOOL = {
+  name: 'create_project',
+  description: '建立新專案並自動拆分工作項目。當用戶提到「XXX專案」並列出要做的事情時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: '專案名稱' },
+      description: { type: 'string', description: '專案說明' },
+      tasks: { type: 'array', items: { type: 'string' }, description: '工作項目清單' },
+    },
+    required: ['name', 'tasks'],
+  },
+};
+
+const GET_PROJECT_STATUS_TOOL = {
+  name: 'get_project_status',
+  description: '查詢專案進度。當用戶問「XXX做到哪了」「XXX專案進度」時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      keyword: { type: 'string', description: '專案名稱關鍵字' },
+    },
+    required: ['keyword'],
+  },
+};
+
+const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL, SAVE_VENDOR_TOOL, GET_VENDOR_TOOL, CREATE_PROJECT_TOOL, GET_PROJECT_STATUS_TOOL];
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -798,6 +861,97 @@ async function handleToolUse(block, userMessage) {
       return { result: `已記錄應付款：付給${block.input.to_whom}${amtStr}`, flexMessage: null };
     } catch (err) {
       return { result: `記錄失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'save_vendor') {
+    try {
+      await supabase.from('xlan_vendors').insert({
+        name: block.input.name,
+        contact_person: block.input.contact_person || null,
+        phone: block.input.phone || null,
+        payment_terms: block.input.payment_terms || null,
+        note: block.input.note || null,
+      });
+      return { result: `已儲存廠商：${block.input.name}`, flexMessage: null };
+    } catch (err) {
+      return { result: `儲存失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'get_vendor') {
+    try {
+      const { data: vendors } = await supabase
+        .from('xlan_vendors').select('*').ilike('name', `%${block.input.keyword}%`).limit(5);
+      if (!vendors || vendors.length === 0) {
+        return { result: `找不到包含「${block.input.keyword}」的廠商`, flexMessage: null };
+      }
+      const lines = vendors.map(v => {
+        const parts = [`🏭 ${v.name}`];
+        if (v.contact_person) parts.push(`聯絡人：${v.contact_person}`);
+        if (v.phone) parts.push(`電話：${v.phone}`);
+        if (v.payment_terms) parts.push(`付款條件：${v.payment_terms}`);
+        if (v.note) parts.push(`備註：${v.note}`);
+        return parts.join('\n');
+      });
+      return { result: lines.join('\n\n'), flexMessage: null };
+    } catch (err) {
+      return { result: `查詢失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'create_project') {
+    try {
+      const { data: proj, error } = await supabase.from('xlan_projects').insert({
+        name: block.input.name,
+        description: block.input.description || null,
+      }).select().single();
+      if (error) throw new Error(error.message);
+
+      const tasks = block.input.tasks || [];
+      if (tasks.length > 0) {
+        const todoRows = tasks.map(t => ({
+          text: t,
+          project_id: proj.id,
+          project_name: block.input.name,
+          priority: 'normal',
+        }));
+        await supabase.from('xlan_todos').insert(todoRows);
+      }
+
+      const taskList = tasks.map((t, i) => `${i + 1}. 🔲 ${t}`).join('\n');
+      return { result: `📁 已建立專案：${block.input.name}\n\n工作項目（共${tasks.length}項）：\n${taskList}`, flexMessage: null };
+    } catch (err) {
+      return { result: `建立專案失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'get_project_status') {
+    try {
+      const { data: projects } = await supabase
+        .from('xlan_projects').select('*').ilike('name', `%${block.input.keyword}%`).eq('status', 'active').limit(1);
+      if (!projects || projects.length === 0) {
+        return { result: `找不到包含「${block.input.keyword}」的進行中專案`, flexMessage: null };
+      }
+      const proj = projects[0];
+      const { data: todos } = await supabase
+        .from('xlan_todos').select('*').eq('project_id', proj.id).order('created_at', { ascending: true });
+      if (!todos || todos.length === 0) {
+        return { result: `📁 ${proj.name}\n尚無工作項目`, flexMessage: null };
+      }
+      const done = todos.filter(t => t.done);
+      const pending = todos.filter(t => !t.done);
+      const pct = Math.round((done.length / todos.length) * 100);
+      const barLen = 10;
+      const filled = Math.round(barLen * done.length / todos.length);
+      const bar = '▓'.repeat(filled) + '░'.repeat(barLen - filled);
+
+      let result = `📁 ${proj.name}\n進度：${done.length}/${todos.length}（${pct}%）\n${bar}\n`;
+      if (done.length > 0) result += `\n${done.map(t => `✅ ${t.text}`).join('\n')}`;
+      if (pending.length > 0) result += `\n${pending.map(t => `🔲 ${t.text}`).join('\n')}`;
+      return { result, flexMessage: null };
+    } catch (err) {
+      return { result: `查詢失敗：${err.message}`, isError: true, flexMessage: null };
     }
   }
 

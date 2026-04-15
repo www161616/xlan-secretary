@@ -126,8 +126,34 @@ CREATE TABLE IF NOT EXISTS xlan_bugs (
 ALTER TABLE xlan_bugs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY IF NOT EXISTS "anon_all_bugs" ON xlan_bugs FOR ALL USING (true) WITH CHECK (true);
 
+-- 廠商資料
+CREATE TABLE IF NOT EXISTS xlan_vendors (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  name text NOT NULL,
+  contact_person text,
+  phone text,
+  payment_terms text,
+  note text,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE xlan_vendors ENABLE ROW LEVEL SECURITY;
+CREATE POLICY IF NOT EXISTS "anon_all_vendors" ON xlan_vendors FOR ALL USING (true) WITH CHECK (true);
+
+-- 專案管理
+CREATE TABLE IF NOT EXISTS xlan_projects (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  name text NOT NULL,
+  description text,
+  status text DEFAULT 'active',
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE xlan_projects ENABLE ROW LEVEL SECURITY;
+CREATE POLICY IF NOT EXISTS "anon_all_projects" ON xlan_projects FOR ALL USING (true) WITH CHECK (true);
+
 -- 欄位補丁（已存在的表加欄位）
 ALTER TABLE xlan_expenses ADD COLUMN IF NOT EXISTS account text NOT NULL DEFAULT 'personal';
 ALTER TABLE xlan_todos ADD COLUMN IF NOT EXISTS priority text DEFAULT 'normal';
 ALTER TABLE xlan_todos ADD COLUMN IF NOT EXISTS source_person text;
 ALTER TABLE xlan_todos ADD COLUMN IF NOT EXISTS done_at timestamptz;
+ALTER TABLE xlan_todos ADD COLUMN IF NOT EXISTS project_id uuid REFERENCES xlan_projects(id);
+ALTER TABLE xlan_todos ADD COLUMN IF NOT EXISTS project_name text;

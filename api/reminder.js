@@ -138,6 +138,19 @@ async function buildMorningSummary(now, todayStr) {
     if (payLines.length > 0) sections.push(payLines.join('\n'));
   }
 
+  // 進行中專案
+  const { data: projects } = await supabase
+    .from('xlan_projects').select('id, name').eq('status', 'active');
+  if (projects && projects.length > 0) {
+    const projLines = [];
+    for (const proj of projects) {
+      const { count } = await supabase
+        .from('xlan_todos').select('*', { count: 'exact', head: true }).eq('project_id', proj.id).eq('done', false);
+      if (count > 0) projLines.push(`- ${proj.name}（${count}項待完成）`);
+    }
+    if (projLines.length > 0) sections.push(`📁 進行中專案\n${projLines.join('\n')}`);
+  }
+
   if (sections.length === 0) {
     return `☀️ 早安香奈！今天是${dateLabel}，目前沒有特別的事項，好好加油！`;
   }

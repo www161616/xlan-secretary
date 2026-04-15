@@ -59,6 +59,8 @@ xlan-secretary/
 | `xlan_recurring` | 定期付款提醒 |
 | `xlan_shipments` | 陸貨到貨追蹤（status: pending/arrived） |
 | `xlan_payables` | 應付款追蹤（status: pending/paid） |
+| `xlan_vendors` | 廠商資料 |
+| `xlan_projects` | 專案管理（status: active/completed） |
 | `xlan_bugs` | Bug 追蹤（status: pending/fixed） |
 | `xlan_kv` | KV 設定（存 owner_line_id 等） |
 
@@ -88,6 +90,8 @@ xlan-secretary/
 18. **待辦優先度** — save_todo 加 priority + source_person 欄位
 19. **陸貨追蹤** — save_shipment / arrive_shipment / get_shipments tools
 20. **應付款** — save_payable tool，付款後自動存入 xlan_expenses
+21. **廠商管理** — save_vendor / get_vendor tools
+22. **專案管理** — create_project（自動拆分工作項目到 xlan_todos）/ get_project_status（進度條）
 
 ### 每小時提醒系統（api/reminder.js）
 
@@ -127,6 +131,10 @@ xlan-secretary/
 | `arrive_shipment` | 標記貨物已到貨 |
 | `get_shipments` | 查詢陸貨追蹤狀態 |
 | `save_payable` | 記錄應付款項 |
+| `save_vendor` | 儲存廠商資料 |
+| `get_vendor` | 查詢廠商資料 |
+| `create_project` | 建立專案 + 自動拆分工作項目 |
+| `get_project_status` | 查詢專案進度 |
 
 ## 待辦功能
 

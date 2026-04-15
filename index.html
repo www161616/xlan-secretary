@@ -23,8 +23,9 @@ body { font-family:-apple-system,'Segoe UI',sans-serif; background:#f5f0ff; colo
 .page-title .badge { background:#9b6dff; color:#fff; font-size:12px; padding:2px 10px; border-radius:12px; font-weight:600; }
 
 /* Bottom Nav */
-.bottom-nav { position:fixed; bottom:0; left:0; right:0; background:#fff; border-top:1px solid #e8e0f0; display:flex; z-index:50; padding-bottom:env(safe-area-inset-bottom); flex-shrink:0; }
-.nav-btn { flex:1; display:flex; flex-direction:column; align-items:center; padding:10px 0 8px; cursor:pointer; color:#b0a8c0; font-size:10px; gap:4px; transition:color .15s; }
+.bottom-nav { position:fixed; bottom:0; left:0; right:0; background:#fff; border-top:1px solid #e8e0f0; display:flex; z-index:50; padding-bottom:env(safe-area-inset-bottom); flex-shrink:0; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+.bottom-nav::-webkit-scrollbar { display:none; }
+.nav-btn { flex:0 0 auto; min-width:60px; display:flex; flex-direction:column; align-items:center; padding:10px 6px 8px; cursor:pointer; color:#b0a8c0; font-size:9px; gap:4px; transition:color .15s; }
 .nav-btn .icon { font-size:22px; }
 .nav-btn.active { color:#9b6dff; }
 
@@ -199,6 +200,19 @@ body { font-family:-apple-system,'Segoe UI',sans-serif; background:#f5f0ff; colo
     <div class="collapse-body" id="pay-done-body"></div>
   </div>
 
+  <!-- 專案 -->
+  <div id="page-projects" class="page">
+    <div class="page-title">專案管理</div>
+    <div id="project-list"></div>
+    <div id="project-detail" style="display:none;"></div>
+  </div>
+
+  <!-- 廠商 -->
+  <div id="page-vendors" class="page">
+    <div class="page-title">廠商資料</div>
+    <div id="vendor-list"></div>
+  </div>
+
   <!-- Bug 追蹤 -->
   <div id="page-bugs" class="page">
     <div class="page-title">Bug 追蹤 <span class="badge" id="bug-badge">0</span></div>
@@ -219,6 +233,8 @@ body { font-family:-apple-system,'Segoe UI',sans-serif; background:#f5f0ff; colo
   <div class="nav-btn" onclick="switchPage('recurring')"><span class="icon">&#128260;</span>定期</div>
   <div class="nav-btn" onclick="switchPage('shipments')"><span class="icon">&#128230;</span>陸貨</div>
   <div class="nav-btn" onclick="switchPage('payables')"><span class="icon">&#128184;</span>付款</div>
+  <div class="nav-btn" onclick="switchPage('projects')"><span class="icon">&#128193;</span>專案</div>
+  <div class="nav-btn" onclick="switchPage('vendors')"><span class="icon">&#127981;</span>廠商</div>
   <div class="nav-btn" onclick="switchPage('bugs')"><span class="icon">&#128027;</span>Bug</div>
 </div>
 
@@ -267,20 +283,16 @@ liff.init({ liffId:'2009806013-ON2KtCsF' }).then(async () => {
 }).catch(e => console.error('LIFF init error', e));
 
 // --- Navigation ---
-const pages = ['todos','notes','expenses','events','recurring','shipments','payables','bugs'];
+const pages = ['todos','notes','expenses','events','recurring','shipments','payables','projects','vendors','bugs'];
 function switchPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(n => n.classList.remove('active'));
   document.getElementById('page-'+name).classList.add('active');
-  document.querySelectorAll('.nav-btn')[pages.indexOf(name)].classList.add('active');
-  if (name==='todos') loadTodos();
-  if (name==='notes') loadNotes();
-  if (name==='expenses') loadExpenses();
-  if (name==='events') loadEvents();
-  if (name==='recurring') loadRecurring();
-  if (name==='shipments') loadShipments();
-  if (name==='payables') loadPayables();
-  if (name==='bugs') loadBugs();
+  const idx = pages.indexOf(name);
+  const navBtns = document.querySelectorAll('.nav-btn');
+  if (navBtns[idx]) navBtns[idx].classList.add('active');
+  const loaders = {todos:loadTodos,notes:loadNotes,expenses:loadExpenses,events:loadEvents,recurring:loadRecurring,shipments:loadShipments,payables:loadPayables,projects:loadProjects,vendors:loadVendors,bugs:loadBugs};
+  if (loaders[name]) loaders[name]();
 }
 
 // --- Todos ---
@@ -574,6 +586,100 @@ async function markPaid(id, amount, title) {
     await fetch(SB_URL+'/xlan_expenses', { method:'POST', headers:H, body:JSON.stringify({ amount, category:'其他', note:'應付款：'+title, type:'expense', account:'business' }) });
   }
   loadPayables();
+}
+
+// --- Projects ---
+let currentProjectId = null;
+async function loadProjects() {
+  currentProjectId = null;
+  document.getElementById('project-detail').style.display = 'none';
+  const data = await api('/xlan_projects?status=eq.active&order=created_at.desc');
+  if (!data.length) { document.getElementById('project-list').innerHTML='<div class="empty">沒有進行中的專案</div>'; return; }
+
+  const cards = [];
+  for (const p of data) {
+    const todos = await api('/xlan_todos?project_id=eq.'+p.id+'&order=created_at.asc');
+    const done = todos.filter(t=>t.done).length;
+    const total = todos.length;
+    const pct = total>0?Math.round(done/total*100):0;
+    const barW = pct+'%';
+    cards.push(`<div class="card card-shadow" style="margin-bottom:10px;cursor:pointer;" onclick="openProject('${p.id}')">
+      <div style="font-size:15px;font-weight:600;color:#3d3552;">${esc(p.name)}</div>
+      ${p.description?'<div style="font-size:12px;color:#8b8b9e;margin-top:4px;">'+esc(p.description)+'</div>':''}
+      <div style="margin-top:10px;background:#ede5f7;border-radius:6px;height:8px;overflow:hidden;">
+        <div style="background:#9b6dff;height:100%;width:${barW};border-radius:6px;transition:width .3s;"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:11px;color:#8b8b9e;">
+        <span>${done}/${total} 完成</span><span>${pct}%</span>
+      </div>
+    </div>`);
+  }
+  document.getElementById('project-list').innerHTML = cards.join('');
+}
+
+async function openProject(id) {
+  currentProjectId = id;
+  const projs = await api('/xlan_projects?id=eq.'+id);
+  if (!projs.length) return;
+  const proj = projs[0];
+  const todos = await api('/xlan_todos?project_id=eq.'+id+'&order=created_at.asc');
+  const done = todos.filter(t=>t.done);
+  const pending = todos.filter(t=>!t.done);
+
+  document.getElementById('project-list').innerHTML = '';
+  document.getElementById('project-detail').style.display = 'block';
+  document.getElementById('project-detail').innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div style="font-size:18px;font-weight:700;color:#3d3552;">${esc(proj.name)}</div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-sm btn-outline" onclick="loadProjects()">返回</button>
+        <button class="btn btn-sm" onclick="completeProject('${id}')">完成專案</button>
+      </div>
+    </div>
+    ${pending.map(t=>`<div class="card" style="margin-bottom:8px;display:flex;align-items:center;gap:12px;">
+      <div class="todo-check" onclick="toggleProjectTodo('${t.id}','${id}')"></div>
+      <div style="flex:1;font-size:14px;">${esc(t.text)}</div>
+    </div>`).join('')}
+    ${done.length>0?'<div style="margin-top:12px;font-size:12px;color:#8b8b9e;">已完成</div>':''}
+    ${done.map(t=>`<div class="card" style="margin-bottom:6px;opacity:.5;display:flex;align-items:center;gap:12px;">
+      <div class="todo-check done">&#10003;</div>
+      <div style="flex:1;font-size:14px;text-decoration:line-through;">${esc(t.text)}</div>
+    </div>`).join('')}
+  `;
+}
+
+async function toggleProjectTodo(todoId, projId) {
+  await api('/xlan_todos?id=eq.'+todoId, { method:'PATCH', body:JSON.stringify({ done:true, done_at:new Date().toISOString() }) });
+  openProject(projId);
+}
+
+async function completeProject(id) {
+  if (!confirm('確定完成此專案？')) return;
+  await api('/xlan_projects?id=eq.'+id, { method:'PATCH', body:JSON.stringify({ status:'completed' }) });
+  loadProjects();
+}
+
+// --- Vendors ---
+async function loadVendors() {
+  const data = await api('/xlan_vendors?order=created_at.desc&limit=100');
+  document.getElementById('vendor-list').innerHTML = data.map(v=>`
+    <div class="card card-shadow" style="margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <div>
+          <div style="font-size:15px;font-weight:600;color:#3d3552;">${esc(v.name)}</div>
+          ${v.contact_person?'<div style="font-size:12px;color:#8b8b9e;margin-top:4px;">聯絡人：'+esc(v.contact_person)+'</div>':''}
+          ${v.phone?'<div style="font-size:12px;color:#9b6dff;margin-top:2px;">電話：'+esc(v.phone)+'</div>':''}
+          ${v.payment_terms?'<div style="font-size:12px;color:#8b8b9e;margin-top:2px;">付款：'+esc(v.payment_terms)+'</div>':''}
+          ${v.note?'<div style="font-size:11px;color:#a09ab0;margin-top:2px;">'+esc(v.note)+'</div>':''}
+        </div>
+        <span style="color:#ef4444;cursor:pointer;font-size:18px;" onclick="delVendor('${v.id}')">&times;</span>
+      </div>
+    </div>`).join('') || '<div class="empty">沒有廠商資料</div>';
+}
+async function delVendor(id) {
+  if (!confirm('確定刪除？')) return;
+  await api('/xlan_vendors?id=eq.'+id, { method:'DELETE' });
+  loadVendors();
 }
 
 // --- Bugs ---
