@@ -21,7 +21,34 @@ const SYSTEM_PROMPT = `你是「小瀾」，香奈的專屬 AI 秘書。
 - 繁體中文回答，親切簡潔
 - 幫香奈記錄、整理、分析任何事情
 - 回答問題、草擬文字、計算數字都可以
-- 重要資訊用條列式整理，不廢話`;
+- 重要資訊用條列式整理，不廢話
+
+【最重要的規則 — 待辦事項自動記錄】
+當用戶說任何需要去做的事情，不要問問題，直接用 save_todo 工具存進待辦清單。
+判斷標準：
+- 要做的事、要處理的事（例如「幫各店送菜單DM」「叫林口備貨」「下午去銀行」）
+- 幫某人做某事
+- 任何動作性的指令
+- 提到時間＋事情的組合（例如「明天要對帳」）
+
+存完之後，在回覆的最前面加上「✅ 已記錄：{待辦內容}」，然後再接你的回覆。
+如果一則訊息包含多個待辦，每個都要存，每個都要確認。
+如果訊息只是聊天、問問題、打招呼，就正常回覆，不要存待辦。`;
+
+const SAVE_TODO_TOOL = {
+  name: 'save_todo',
+  description: '將待辦事項存入清單。當用戶提到任何需要去做的事情時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      task: {
+        type: 'string',
+        description: '待辦事項摘要，繁體中文，20字以內',
+      },
+    },
+    required: ['task'],
+  },
+};
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -75,7 +102,7 @@ async function judgeTask(messageText) {
   }
 }
 
-// --- Claude API：AI 對話 ---
+// --- Claude API：AI 對話（支援 tool use 自動存待辦）---
 async function chatWithClaude(userId, userMessage) {
   // 撈最近 20 則對話
   const { data: history } = await supabase
@@ -91,16 +118,55 @@ async function chatWithClaude(userId, userMessage) {
   }));
   messages.push({ role: 'user', content: userMessage });
 
-  const response = await anthropic.messages.create({
+  // 第一次呼叫，帶 tool
+  let response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 1024,
     system: SYSTEM_PROMPT,
+    tools: [SAVE_TODO_TOOL],
     messages,
   });
 
-  const reply = response.content[0].text;
+  const savedTasks = [];
 
-  // 存這次對話
+  // 處理 tool use 迴圈（可能存多個待辦）
+  while (response.stop_reason === 'tool_use') {
+    const toolBlocks = response.content.filter((b) => b.type === 'tool_use');
+
+    const toolResults = [];
+    for (const block of toolBlocks) {
+      if (block.name === 'save_todo' && block.input.task) {
+        await supabase.from('xlan_todos').insert({
+          text: block.input.task,
+          source_message: userMessage,
+        });
+        savedTasks.push(block.input.task);
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: `已存入待辦：${block.input.task}`,
+        });
+      }
+    }
+
+    // 把 assistant 回應 + tool results 加入 messages，讓 Claude 繼續
+    messages.push({ role: 'assistant', content: response.content });
+    messages.push({ role: 'user', content: toolResults });
+
+    response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1024,
+      system: SYSTEM_PROMPT,
+      tools: [SAVE_TODO_TOOL],
+      messages,
+    });
+  }
+
+  // 提取最終文字回覆
+  const textBlock = response.content.find((b) => b.type === 'text');
+  const reply = textBlock ? textBlock.text : '已處理完成！';
+
+  // 存對話記錄（只存最終文字，不存 tool 中間過程）
   await supabase.from('xlan_conversations').insert([
     { user_id: userId, role: 'user', content: userMessage },
     { user_id: userId, role: 'assistant', content: reply },
@@ -177,17 +243,17 @@ async function handleDirectMessage(event) {
   const userId = event.source.userId;
   let reply;
 
-  // 指令：列出待辦
-  if (/待辦|清單|有什麼事/.test(text)) {
+  // 快捷指令：列出待辦（精確匹配，避免正常對話誤觸）
+  if (/^(待辦|清單|有什麼事)$/.test(text)) {
     reply = await listTodos();
   }
-  // 指令：完成/刪除第N項
+  // 快捷指令：完成/刪除第N項
   else if (/^(完成|刪除)第(\d+)項$/.test(text)) {
     const match = text.match(/^(完成|刪除)第(\d+)項$/);
     const n = parseInt(match[2], 10);
     reply = await completeTodo(n);
   }
-  // AI 對話
+  // 所有其他訊息：AI 處理（自動判斷是否為待辦 + 對話）
   else {
     reply = await chatWithClaude(userId, text);
   }
