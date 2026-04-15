@@ -281,7 +281,17 @@ account 判斷同記帳規則。
 當用戶說「XXX修好了」「XXX好了」「fix了」，呼叫 fix_bug 標記修復。
 
 【優先待辦】
-當用戶問「今天先做什麼」「優先順序」「今天重點」，呼叫 get_priority_todos。`;
+當用戶問「今天先做什麼」「優先順序」「今天重點」，呼叫 get_priority_todos。
+
+【陸貨追蹤】
+當用戶提到「陸貨」「預計到貨」「幾號到」，呼叫 save_shipment 記錄。
+存完回覆「📦 已記錄到貨追蹤：{title} 預計 {date}」。
+當用戶說「陸貨到了」「XXX到了」，呼叫 arrive_shipment 標記已到。
+當用戶問「陸貨到了沒」「貨況」，呼叫 get_shipments 查詢。
+
+【應付款】
+當用戶說「要付XXX多少錢」「撥款給XXX」「付給龍潭XXX元」，
+呼叫 save_payable 記錄，回覆「💸 已記錄應付款：付給{to_whom} NT$\{amount\}」。`;
 
 // --- Tool 定義 ---
 const SAVE_TODO_TOOL = {
@@ -434,7 +444,55 @@ const GET_PRIORITY_TODOS_TOOL = {
   },
 };
 
-const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL];
+const SAVE_SHIPMENT_TOOL = {
+  name: 'save_shipment',
+  description: '記錄陸貨或貨物到貨追蹤。當用戶提到「陸貨」「到貨」「預計幾號到」時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: '貨物名稱或描述' },
+      expected_date: { type: 'string', description: '預計到貨日，格式 YYYY-MM-DD' },
+      note: { type: 'string', description: '備註' },
+    },
+    required: ['title', 'expected_date'],
+  },
+};
+
+const ARRIVE_SHIPMENT_TOOL = {
+  name: 'arrive_shipment',
+  description: '標記貨物已到貨。當用戶說「陸貨到了」「XXX到了」時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      keyword: { type: 'string', description: '貨物關鍵字' },
+    },
+    required: ['keyword'],
+  },
+};
+
+const GET_SHIPMENTS_TOOL = {
+  name: 'get_shipments',
+  description: '查詢陸貨追蹤狀態。當用戶問「陸貨到了沒」「貨況」時使用。',
+  input_schema: { type: 'object', properties: {} },
+};
+
+const SAVE_PAYABLE_TOOL = {
+  name: 'save_payable',
+  description: '記錄應付款項。當用戶說「要付XXX多少錢」「撥款給XXX」時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: '付款說明' },
+      amount: { type: ['number', 'null'], description: '金額' },
+      to_whom: { type: 'string', description: '付給誰' },
+      due_date: { type: ['string', 'null'], description: '到期日 YYYY-MM-DD' },
+      note: { type: 'string', description: '備註' },
+    },
+    required: ['title', 'to_whom'],
+  },
+};
+
+const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL];
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -676,6 +734,70 @@ async function handleToolUse(block, userMessage) {
     } catch (err) {
       console.error('Priority todos error:', err.message);
       return { result: `查詢失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'save_shipment') {
+    try {
+      await supabase.from('xlan_shipments').insert({
+        title: block.input.title,
+        expected_date: block.input.expected_date,
+        note: block.input.note || null,
+      });
+      return { result: `已記錄到貨追蹤：${block.input.title} 預計 ${block.input.expected_date}`, flexMessage: null };
+    } catch (err) {
+      return { result: `記錄失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'arrive_shipment') {
+    try {
+      const { data: ships } = await supabase
+        .from('xlan_shipments').select('*').eq('status', 'pending')
+        .ilike('title', `%${block.input.keyword}%`).limit(1);
+      if (!ships || ships.length === 0) {
+        return { result: `找不到包含「${block.input.keyword}」的待到貨物`, flexMessage: null };
+      }
+      await supabase.from('xlan_shipments').update({ status: 'arrived', arrived_at: new Date().toISOString() }).eq('id', ships[0].id);
+      return { result: `📦 已標記到貨：${ships[0].title}`, flexMessage: null };
+    } catch (err) {
+      return { result: `標記失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'get_shipments') {
+    try {
+      const { data: ships } = await supabase
+        .from('xlan_shipments').select('*').eq('status', 'pending').order('expected_date', { ascending: true });
+      if (!ships || ships.length === 0) {
+        return { result: '目前沒有待到貨物！', flexMessage: null };
+      }
+      const today = new Date().toISOString().split('T')[0];
+      const lines = ships.map(s => {
+        const diff = Math.round((new Date(s.expected_date) - new Date(today)) / 86400000);
+        const when = diff === 0 ? '今天到' : diff === 1 ? '明天到' : diff < 0 ? `已遲${-diff}天 ⚠️` : `還有${diff}天`;
+        const warn = diff <= 1 ? ' ⚠️' : '';
+        return `• ${s.title} — 預計 ${s.expected_date}（${when}）${warn}`;
+      });
+      return { result: `📦 陸貨追蹤\n\n${lines.join('\n')}`, flexMessage: null };
+    } catch (err) {
+      return { result: `查詢失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'save_payable') {
+    try {
+      await supabase.from('xlan_payables').insert({
+        title: block.input.title,
+        amount: block.input.amount || null,
+        to_whom: block.input.to_whom,
+        due_date: block.input.due_date || null,
+        note: block.input.note || null,
+      });
+      const amtStr = block.input.amount ? ` NT$${block.input.amount}` : '';
+      return { result: `已記錄應付款：付給${block.input.to_whom}${amtStr}`, flexMessage: null };
+    } catch (err) {
+      return { result: `記錄失敗：${err.message}`, isError: true, flexMessage: null };
     }
   }
 

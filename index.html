@@ -179,6 +179,26 @@ body { font-family:-apple-system,'Segoe UI',sans-serif; background:#f5f0ff; colo
     <div id="recurring-list"></div>
   </div>
 
+  <!-- 陸貨 -->
+  <div id="page-shipments" class="page">
+    <div class="page-title">陸貨追蹤 <span class="badge" id="ship-badge">0</span></div>
+    <div id="ship-pending"></div>
+    <div class="collapse-header" id="ship-arrived-header" onclick="toggleArrivedShips()">
+      <span class="arrow">&#9654;</span> 已到貨
+    </div>
+    <div class="collapse-body" id="ship-arrived-body"></div>
+  </div>
+
+  <!-- 付款 -->
+  <div id="page-payables" class="page">
+    <div class="page-title">應付款 <span class="badge" id="pay-badge">0</span></div>
+    <div id="pay-pending"></div>
+    <div class="collapse-header" id="pay-done-header" onclick="togglePaidPayables()">
+      <span class="arrow">&#9654;</span> 已付款
+    </div>
+    <div class="collapse-body" id="pay-done-body"></div>
+  </div>
+
   <!-- Bug 追蹤 -->
   <div id="page-bugs" class="page">
     <div class="page-title">Bug 追蹤 <span class="badge" id="bug-badge">0</span></div>
@@ -197,6 +217,8 @@ body { font-family:-apple-system,'Segoe UI',sans-serif; background:#f5f0ff; colo
   <div class="nav-btn" onclick="switchPage('expenses')"><span class="icon">&#128176;</span>帳務</div>
   <div class="nav-btn" onclick="switchPage('events')"><span class="icon">&#128197;</span>行程</div>
   <div class="nav-btn" onclick="switchPage('recurring')"><span class="icon">&#128260;</span>定期</div>
+  <div class="nav-btn" onclick="switchPage('shipments')"><span class="icon">&#128230;</span>陸貨</div>
+  <div class="nav-btn" onclick="switchPage('payables')"><span class="icon">&#128184;</span>付款</div>
   <div class="nav-btn" onclick="switchPage('bugs')"><span class="icon">&#128027;</span>Bug</div>
 </div>
 
@@ -245,7 +267,7 @@ liff.init({ liffId:'2009806013-ON2KtCsF' }).then(async () => {
 }).catch(e => console.error('LIFF init error', e));
 
 // --- Navigation ---
-const pages = ['todos','notes','expenses','events','recurring','bugs'];
+const pages = ['todos','notes','expenses','events','recurring','shipments','payables','bugs'];
 function switchPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(n => n.classList.remove('active'));
@@ -256,6 +278,8 @@ function switchPage(name) {
   if (name==='expenses') loadExpenses();
   if (name==='events') loadEvents();
   if (name==='recurring') loadRecurring();
+  if (name==='shipments') loadShipments();
+  if (name==='payables') loadPayables();
   if (name==='bugs') loadBugs();
 }
 
@@ -463,6 +487,93 @@ async function saveRecurring() {
 async function toggleRecurring(id) {
   await api('/xlan_recurring?id=eq.'+id,{method:'PATCH',body:JSON.stringify({active:false})});
   loadRecurring();
+}
+
+// --- Shipments ---
+let shipsArrivedOpen = false;
+function toggleArrivedShips() {
+  shipsArrivedOpen = !shipsArrivedOpen;
+  document.getElementById('ship-arrived-header').classList.toggle('open', shipsArrivedOpen);
+  document.getElementById('ship-arrived-body').classList.toggle('open', shipsArrivedOpen);
+}
+async function loadShipments() {
+  const data = await api('/xlan_shipments?order=expected_date.asc&limit=100');
+  const pending = data.filter(s=>s.status==='pending');
+  const arrived = data.filter(s=>s.status==='arrived').slice(-20).reverse();
+  document.getElementById('ship-badge').textContent = pending.length;
+  const today = new Date().toISOString().split('T')[0];
+
+  document.getElementById('ship-pending').innerHTML = pending.map(s=>{
+    const diff = Math.round((new Date(s.expected_date)-new Date(today))/86400000);
+    const when = diff===0?'今天到':diff===1?'明天到':diff<0?'已遲'+(-diff)+'天':diff+'天後';
+    const color = diff<=1?'#ef4444':diff<=3?'#f59e0b':'#a09ab0';
+    return `<div class="card card-shadow" style="margin-bottom:10px;border-left:3px solid ${color};">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div><div style="font-size:14px;font-weight:500;color:#3d3552;">${esc(s.title)}</div>
+        <div style="font-size:12px;color:#8b8b9e;margin-top:2px;">預計 ${s.expected_date}（${when}）</div>
+        ${s.note?'<div style="font-size:11px;color:#a09ab0;margin-top:2px;">'+esc(s.note)+'</div>':''}</div>
+        <button class="btn btn-sm" onclick="arriveShip('${s.id}')" style="min-height:32px;padding:4px 12px;font-size:12px;">已到貨</button>
+      </div>
+    </div>`;
+  }).join('') || '<div class="empty">沒有待到貨物</div>';
+
+  document.getElementById('ship-arrived-body').innerHTML = arrived.map(s=>`
+    <div class="card" style="margin-bottom:8px;opacity:.6;">
+      <div style="font-size:14px;color:#8b8b9e;">${esc(s.title)}</div>
+      <div style="font-size:11px;color:#a09ab0;margin-top:4px;">到貨於 ${fmtDate(s.arrived_at||s.created_at)}</div>
+    </div>`).join('');
+}
+async function arriveShip(id) {
+  await api('/xlan_shipments?id=eq.'+id, { method:'PATCH', body:JSON.stringify({ status:'arrived', arrived_at:new Date().toISOString() }) });
+  loadShipments();
+}
+
+// --- Payables ---
+let paidOpen = false;
+function togglePaidPayables() {
+  paidOpen = !paidOpen;
+  document.getElementById('pay-done-header').classList.toggle('open', paidOpen);
+  document.getElementById('pay-done-body').classList.toggle('open', paidOpen);
+}
+async function loadPayables() {
+  const data = await api('/xlan_payables?order=due_date.asc.nullslast&limit=100');
+  const pending = data.filter(p=>p.status==='pending');
+  const paid = data.filter(p=>p.status==='paid').slice(-20).reverse();
+  document.getElementById('pay-badge').textContent = pending.length;
+  const today = new Date().toISOString().split('T')[0];
+
+  document.getElementById('pay-pending').innerHTML = pending.map(p=>{
+    let dueLine = '';
+    if (p.due_date) {
+      const diff = Math.round((new Date(p.due_date)-new Date(today))/86400000);
+      const when = diff===0?'今天到期':diff===1?'明天到期':diff<0?'已過期'+(-diff)+'天':diff+'天後到期';
+      dueLine = `<div style="font-size:12px;color:${diff<=1?'#ef4444':'#8b8b9e'};margin-top:2px;">${p.due_date}（${when}）</div>`;
+    }
+    const amt = p.amount?'$'+p.amount.toLocaleString():'';
+    return `<div class="card card-shadow" style="margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <div><div style="font-size:14px;font-weight:500;color:#3d3552;">${esc(p.title)}</div>
+        <div style="font-size:12px;color:#9b6dff;margin-top:2px;">付給 ${esc(p.to_whom)} ${amt}</div>
+        ${dueLine}
+        ${p.note?'<div style="font-size:11px;color:#a09ab0;margin-top:2px;">'+esc(p.note)+'</div>':''}</div>
+        <button class="btn btn-sm" onclick="markPaid('${p.id}',${p.amount||0},'${esc(p.title)}')" style="min-height:32px;padding:4px 12px;font-size:12px;">已付</button>
+      </div>
+    </div>`;
+  }).join('') || '<div class="empty">沒有待付款項</div>';
+
+  document.getElementById('pay-done-body').innerHTML = paid.map(p=>`
+    <div class="card" style="margin-bottom:8px;opacity:.6;">
+      <div style="font-size:14px;color:#8b8b9e;">${esc(p.title)} — 付給 ${esc(p.to_whom)} ${p.amount?'$'+p.amount.toLocaleString():''}</div>
+      <div style="font-size:11px;color:#a09ab0;margin-top:4px;">付款於 ${fmtDate(p.paid_at||p.created_at)}</div>
+    </div>`).join('');
+}
+async function markPaid(id, amount, title) {
+  await api('/xlan_payables?id=eq.'+id, { method:'PATCH', body:JSON.stringify({ status:'paid', paid_at:new Date().toISOString() }) });
+  // 同步存入 xlan_expenses
+  if (amount > 0) {
+    await fetch(SB_URL+'/xlan_expenses', { method:'POST', headers:H, body:JSON.stringify({ amount, category:'其他', note:'應付款：'+title, type:'expense', account:'business' }) });
+  }
+  loadPayables();
 }
 
 // --- Bugs ---

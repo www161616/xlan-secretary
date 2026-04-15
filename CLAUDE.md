@@ -57,6 +57,8 @@ xlan-secretary/
 | `xlan_notes` | 筆記 |
 | `xlan_events` | 行程快取（同步 Google Calendar） |
 | `xlan_recurring` | 定期付款提醒 |
+| `xlan_shipments` | 陸貨到貨追蹤（status: pending/arrived） |
+| `xlan_payables` | 應付款追蹤（status: pending/paid） |
 | `xlan_bugs` | Bug 追蹤（status: pending/fixed） |
 | `xlan_kv` | KV 設定（存 owner_line_id 等） |
 
@@ -84,6 +86,8 @@ xlan-secretary/
 16. **Bug 追蹤** — `save_bug` / `fix_bug` tools，記錄和標記修復系統 bug
 17. **優先待辦** — `get_priority_todos` tool，依 urgent/important/normal 排序
 18. **待辦優先度** — save_todo 加 priority + source_person 欄位
+19. **陸貨追蹤** — save_shipment / arrive_shipment / get_shipments tools
+20. **應付款** — save_payable tool，付款後自動存入 xlan_expenses
 
 ### 每小時提醒系統（api/reminder.js）
 
@@ -119,6 +123,10 @@ xlan-secretary/
 | `save_bug` | 記錄系統 bug |
 | `fix_bug` | 標記 bug 已修復 |
 | `get_priority_todos` | 依優先度排序待辦清單 |
+| `save_shipment` | 記錄陸貨到貨追蹤 |
+| `arrive_shipment` | 標記貨物已到貨 |
+| `get_shipments` | 查詢陸貨追蹤狀態 |
+| `save_payable` | 記錄應付款項 |
 
 ## 待辦功能
 

@@ -102,6 +102,42 @@ async function buildMorningSummary(now, todayStr) {
     if (upcoming.length > 0) sections.push(`💰 付款提醒\n${upcoming.join('\n')}`);
   }
 
+  // 陸貨到貨提醒
+  const tomorrow = new Date(now);
+  tomorrow.setDate(today + 1);
+  const tomorrowStr = getTodayStr(tomorrow);
+  const { data: ships } = await supabase
+    .from('xlan_shipments').select('*').eq('status', 'pending')
+    .or(`expected_date.eq.${todayStr},expected_date.eq.${tomorrowStr}`)
+    .order('expected_date', { ascending: true });
+  if (ships && ships.length > 0) {
+    const shipLines = ships.map(s => {
+      const isToday = s.expected_date === todayStr;
+      return isToday
+        ? `- 📦 今日到貨：${s.title}（記得安排出貨）`
+        : `- 📦 明日到貨預告：${s.title}（提前準備）`;
+    });
+    sections.push(shipLines.join('\n'));
+  }
+
+  // 應付款提醒
+  const { data: payables } = await supabase
+    .from('xlan_payables').select('*').eq('status', 'pending')
+    .order('due_date', { ascending: true });
+  if (payables && payables.length > 0) {
+    const payLines = [];
+    for (const p of payables) {
+      if (!p.due_date) continue;
+      const diff = Math.round((new Date(p.due_date) - new Date(todayStr)) / 86400000);
+      if (diff >= 0 && diff <= 3) {
+        const when = diff === 0 ? '今天到期' : diff === 1 ? '明天到期' : `${diff}天後到期`;
+        const amt = p.amount ? ` NT$${p.amount.toLocaleString()}` : '';
+        payLines.push(`- 💸 付給${p.to_whom}${amt}（${when}）`);
+      }
+    }
+    if (payLines.length > 0) sections.push(payLines.join('\n'));
+  }
+
   if (sections.length === 0) {
     return `☀️ 早安香奈！今天是${dateLabel}，目前沒有特別的事項，好好加油！`;
   }

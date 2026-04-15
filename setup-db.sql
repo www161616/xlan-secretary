@@ -85,6 +85,34 @@ CREATE POLICY IF NOT EXISTS "anon_all_events" ON xlan_events FOR ALL USING (true
 CREATE POLICY IF NOT EXISTS "anon_all_recurring" ON xlan_recurring FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY IF NOT EXISTS "anon_all_kv" ON xlan_kv FOR ALL USING (true) WITH CHECK (true);
 
+-- 陸貨追蹤
+CREATE TABLE IF NOT EXISTS xlan_shipments (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  title text NOT NULL,
+  expected_date date NOT NULL,
+  status text DEFAULT 'pending',
+  note text,
+  arrived_at timestamptz,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE xlan_shipments ENABLE ROW LEVEL SECURITY;
+CREATE POLICY IF NOT EXISTS "anon_all_shipments" ON xlan_shipments FOR ALL USING (true) WITH CHECK (true);
+
+-- 應付款追蹤
+CREATE TABLE IF NOT EXISTS xlan_payables (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  title text NOT NULL,
+  amount integer,
+  to_whom text,
+  due_date date,
+  status text DEFAULT 'pending',
+  note text,
+  paid_at timestamptz,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE xlan_payables ENABLE ROW LEVEL SECURITY;
+CREATE POLICY IF NOT EXISTS "anon_all_payables" ON xlan_payables FOR ALL USING (true) WITH CHECK (true);
+
 -- Bug 追蹤
 CREATE TABLE IF NOT EXISTS xlan_bugs (
   id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
