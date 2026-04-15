@@ -251,6 +251,7 @@ account 判斷：提到廠商名稱、進貨、業務往來、門市費用 = bus
 當用戶說「記一下」「備忘」「筆記」「記住」等，或提到重要資訊但不是待辦也不是帳務，呼叫 save_note 儲存。
 存完回覆「📝 已記錄筆記」。
 tags 根據內容自動分類，例如 ["業務","門市"]、["個人"]、["ERP"] 等。
+當用戶說「查筆記」「看筆記」「之前記了什麼」，呼叫 get_notes 列出筆記，不要問用戶問題。
 
 【定期付款】
 當用戶提到「每個月」「每年」「固定」「定期」付款或費用，呼叫 save_recurring 儲存。
@@ -315,6 +316,18 @@ const GET_EXPENSES_TOOL = {
   },
 };
 
+const GET_NOTES_TOOL = {
+  name: 'get_notes',
+  description: '查詢筆記記錄。當用戶說「查筆記」「看筆記」「之前記了什麼」時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      keyword: { type: 'string', description: '關鍵字搜尋，沒有就留空字串' },
+    },
+    required: [],
+  },
+};
+
 const SAVE_NOTE_TOOL = {
   name: 'save_note',
   description: '記錄一則筆記、備忘或重要資訊。當用戶說「記一下」「備忘」「筆記」「記住」等時使用。',
@@ -346,7 +359,7 @@ const SAVE_RECURRING_TOOL = {
   },
 };
 
-const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, SAVE_RECURRING_TOOL];
+const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL];
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -473,6 +486,30 @@ async function handleToolUse(block, userMessage) {
     } catch (err) {
       console.error('Note error:', err.message);
       return { result: `筆記儲存失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'get_notes') {
+    try {
+      const keyword = block.input.keyword;
+      let query = supabase.from('xlan_notes').select('*').order('created_at', { ascending: false }).limit(20);
+      if (keyword) {
+        query = query.ilike('content', `%${keyword}%`);
+      }
+      const { data } = await query;
+      if (!data || data.length === 0) {
+        return { result: keyword ? `找不到包含「${keyword}」的筆記。` : '目前沒有任何筆記。', flexMessage: null };
+      }
+      const items = data.map((n, i) => {
+        const tags = (n.tags || []).length > 0 ? ` [${n.tags.join(',')}]` : '';
+        const dateStr = new Date(n.created_at).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        const summary = n.content.length > 40 ? n.content.substring(0, 40) + '...' : n.content;
+        return `${i + 1}. ${summary}${tags} - ${dateStr}`;
+      }).join('\n');
+      return { result: `📝 筆記記錄（共${data.length}筆）\n\n${items}`, flexMessage: null };
+    } catch (err) {
+      console.error('Get notes error:', err.message);
+      return { result: `查詢筆記失敗：${err.message}`, isError: true, flexMessage: null };
     }
   }
 
