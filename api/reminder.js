@@ -59,15 +59,22 @@ async function buildMorningSummary(now, todayStr) {
     sections.push(`📅 今日行程\n${lines.join('\n')}`);
   }
 
-  // 待辦
-  const { data: todos, count } = await supabase
-    .from('xlan_todos').select('*', { count: 'exact' }).eq('done', false)
-    .order('created_at', { ascending: true }).limit(5);
+  // 待辦（依優先度排序）
+  const { data: todos } = await supabase
+    .from('xlan_todos').select('*').eq('done', false)
+    .order('created_at', { ascending: true });
   if (todos && todos.length > 0) {
-    const total = count || todos.length;
-    const lines = todos.map(t => `- ${t.text}`);
-    let sec = `📋 待辦（共${total}項）\n${lines.join('\n')}`;
-    if (total > 5) sec += `\n...還有${total - 5}項`;
+    const urgent = todos.filter(t => t.priority === 'urgent');
+    const important = todos.filter(t => t.priority === 'important');
+    const normal = todos.filter(t => !t.priority || t.priority === 'normal');
+    const sorted = [...urgent, ...important, ...normal];
+    const top5 = sorted.slice(0, 5);
+    const lines = top5.map(t => {
+      const icon = t.priority === 'urgent' ? '🔴 ' : t.priority === 'important' ? '🟡 ' : '⚪ ';
+      return `- ${icon}${t.text}`;
+    });
+    let sec = `📋 待辦（共${todos.length}項）\n${lines.join('\n')}`;
+    if (todos.length > 5) sec += `\n...還有${todos.length - 5}項`;
     sections.push(sec);
   }
 

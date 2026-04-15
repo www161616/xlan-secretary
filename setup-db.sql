@@ -85,5 +85,21 @@ CREATE POLICY IF NOT EXISTS "anon_all_events" ON xlan_events FOR ALL USING (true
 CREATE POLICY IF NOT EXISTS "anon_all_recurring" ON xlan_recurring FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY IF NOT EXISTS "anon_all_kv" ON xlan_kv FOR ALL USING (true) WITH CHECK (true);
 
+-- Bug 追蹤
+CREATE TABLE IF NOT EXISTS xlan_bugs (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  description text NOT NULL,
+  reporter text,
+  source_group text,
+  status text DEFAULT 'pending',
+  fixed_at timestamptz,
+  created_at timestamptz DEFAULT now()
+);
+ALTER TABLE xlan_bugs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY IF NOT EXISTS "anon_all_bugs" ON xlan_bugs FOR ALL USING (true) WITH CHECK (true);
+
 -- 欄位補丁（已存在的表加欄位）
 ALTER TABLE xlan_expenses ADD COLUMN IF NOT EXISTS account text NOT NULL DEFAULT 'personal';
+ALTER TABLE xlan_todos ADD COLUMN IF NOT EXISTS priority text DEFAULT 'normal';
+ALTER TABLE xlan_todos ADD COLUMN IF NOT EXISTS source_person text;
+ALTER TABLE xlan_todos ADD COLUMN IF NOT EXISTS done_at timestamptz;

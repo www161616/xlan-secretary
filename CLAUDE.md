@@ -57,6 +57,7 @@ xlan-secretary/
 | `xlan_notes` | 筆記 |
 | `xlan_events` | 行程快取（同步 Google Calendar） |
 | `xlan_recurring` | 定期付款提醒 |
+| `xlan_bugs` | Bug 追蹤（status: pending/fixed） |
 | `xlan_kv` | KV 設定（存 owner_line_id 等） |
 
 所有表皆啟用 RLS，Policy 為 anon/authenticated 全開（Bot 用 anon key）。
@@ -80,6 +81,9 @@ xlan-secretary/
 13. **Owner ID 自動儲存** — 首次私訊 upsert owner_line_id 到 xlan_kv
 14. **待辦快捷指令** — 「待辦」「清單」「完成第N項」精確匹配
 15. **自訂提醒** — `set_reminder` tool，設定每日自訂提醒時間存入 xlan_kv
+16. **Bug 追蹤** — `save_bug` / `fix_bug` tools，記錄和標記修復系統 bug
+17. **優先待辦** — `get_priority_todos` tool，依 urgent/important/normal 排序
+18. **待辦優先度** — save_todo 加 priority + source_person 欄位
 
 ### 每小時提醒系統（api/reminder.js）
 
@@ -112,6 +116,9 @@ xlan-secretary/
 | `get_notes` | 查詢筆記 |
 | `save_recurring` | 儲存定期付款提醒 |
 | `set_reminder` | 設定自訂每日提醒時間 |
+| `save_bug` | 記錄系統 bug |
+| `fix_bug` | 標記 bug 已修復 |
+| `get_priority_todos` | 依優先度排序待辦清單 |
 
 ## 待辦功能
 

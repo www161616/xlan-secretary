@@ -218,15 +218,21 @@ const SYSTEM_PROMPT = `你是「小瀾」，香奈的專屬 AI 秘書。
 - 回答問題、草擬文字、計算數字都可以
 - 重要資訊用條列式整理，不廢話
 
-【最重要的規則 — 待辦事項自動記錄】
-當用戶說任何需要去做的事情，不要問問題，直接用 save_todo 工具存進待辦清單。
-判斷標準：
-- 要做的事、要處理的事（例如「幫各店送菜單DM」「叫林口備貨」「下午去銀行」）
-- 幫某人做某事
-- 任何動作性的指令
-- 提到時間＋事情的組合（例如「明天要對帳」）
+【最重要的規則 — 待辦 vs 記事 判斷】
+待辦（save_todo）= 需要執行的動作，有動詞：去、打、買、確認、回覆、處理、安排、記得、幫、叫、通知。
+例如：「去銀行」「打電話給廠商」「幫各店送菜單」「確認龍潭付款」
+priority 判斷：
+- urgent：老闆交辦、bug、付款到期、有「馬上」「緊急」「立刻」
+- important：有截止日期、陸貨相關、到期3天內
+- normal：其他
+source_person：誰交辦的（從訊息判斷，沒有就填 null）
 
-存完之後，在回覆的最前面加上「✅ 已記錄：{待辦內容}」，然後再接你的回覆。
+記事（save_note）= 需要記住的資訊，不是動作：薪資承諾、聯絡資料、密碼帳號、重要數字、規格。
+例如：「盈君月薪5000」「林口電話0912xxx」
+承諾記事一律存 save_note，tags 加 ["承諾"]。
+
+不確定時：有動詞選待辦，是資訊選記事。
+存完待辦回覆「✅ 已記錄：{待辦內容}」，存完記事回覆「📝 已記錄筆記」。
 如果一則訊息包含多個待辦，每個都要存，每個都要確認。
 如果訊息只是聊天、問問題、打招呼，就正常回覆，不要存待辦。
 
@@ -267,16 +273,26 @@ account 判斷同記帳規則。
 
 【完成與延後】
 當用戶說「完成」「辦完了」「OK了」，表示最近追蹤的事項已完成，正常回覆確認。
-當用戶說「延後」「改到X點」「明天再做」，幫忙更新對應行程。`;
+當用戶說「延後」「改到X點」「明天再做」，幫忙更新對應行程。
+
+【Bug 追蹤】
+群組或私訊中出現「壞了」「不能用」「出錯」「bug」「error」「異常」，
+自動呼叫 save_bug 記錄，回覆「🐛 已記錄 bug：{描述}，我會追蹤這個問題」。
+當用戶說「XXX修好了」「XXX好了」「fix了」，呼叫 fix_bug 標記修復。
+
+【優先待辦】
+當用戶問「今天先做什麼」「優先順序」「今天重點」，呼叫 get_priority_todos。`;
 
 // --- Tool 定義 ---
 const SAVE_TODO_TOOL = {
   name: 'save_todo',
-  description: '將待辦事項存入清單。當用戶提到任何需要去做的事情時使用。',
+  description: '將待辦事項存入清單。當用戶提到任何需要執行的動作時使用。',
   input_schema: {
     type: 'object',
     properties: {
       task: { type: 'string', description: '待辦事項摘要，繁體中文，20字以內' },
+      priority: { type: 'string', enum: ['urgent', 'important', 'normal'], description: 'urgent=緊急, important=重要, normal=一般' },
+      source_person: { type: ['string', 'null'], description: '誰交辦的，沒有就 null' },
     },
     required: ['task'],
   },
@@ -383,7 +399,42 @@ const SET_REMINDER_TOOL = {
   },
 };
 
-const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL];
+const SAVE_BUG_TOOL = {
+  name: 'save_bug',
+  description: '記錄 ERP 或系統 bug。當有人回報功能壞掉、不能用、出錯時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      description: { type: 'string', description: 'bug 描述' },
+      reporter: { type: ['string', 'null'], description: '回報人' },
+      source_group: { type: ['string', 'null'], description: '來源群組' },
+    },
+    required: ['description'],
+  },
+};
+
+const FIX_BUG_TOOL = {
+  name: 'fix_bug',
+  description: '標記 bug 已修復。當用戶說「XXX修好了」「fix了」時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      keyword: { type: 'string', description: 'bug 關鍵字，用來搜尋對應的 bug' },
+    },
+    required: ['keyword'],
+  },
+};
+
+const GET_PRIORITY_TODOS_TOOL = {
+  name: 'get_priority_todos',
+  description: '取得今日優先待辦清單，依緊急程度排序。當用戶問「今天先做什麼」「優先順序」時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {},
+  },
+};
+
+const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL];
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -446,8 +497,11 @@ async function handleToolUse(block, userMessage) {
     await supabase.from('xlan_todos').insert({
       text: block.input.task,
       source_message: userMessage,
+      priority: block.input.priority || 'normal',
+      source_person: block.input.source_person || null,
     });
-    return { result: `已存入待辦：${block.input.task}`, flexMessage: null };
+    const pLabel = { urgent: '🔴', important: '🟡', normal: '' }[block.input.priority || 'normal'];
+    return { result: `已存入待辦${pLabel}：${block.input.task}`, flexMessage: null };
   }
 
   if (block.name === 'create_calendar_event' && block.input.title) {
@@ -554,6 +608,74 @@ async function handleToolUse(block, userMessage) {
     } catch (err) {
       console.error('Recurring error:', err.message);
       return { result: `定期付款設定失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'save_bug') {
+    try {
+      await supabase.from('xlan_bugs').insert({
+        description: block.input.description,
+        reporter: block.input.reporter || null,
+        source_group: block.input.source_group || null,
+      });
+      return { result: `已記錄 bug：${block.input.description}`, flexMessage: null };
+    } catch (err) {
+      console.error('Bug error:', err.message);
+      return { result: `Bug 記錄失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'fix_bug') {
+    try {
+      const { data: bugs } = await supabase
+        .from('xlan_bugs').select('*').eq('status', 'pending')
+        .ilike('description', `%${block.input.keyword}%`).limit(1);
+      if (!bugs || bugs.length === 0) {
+        return { result: `找不到包含「${block.input.keyword}」的待修 bug`, flexMessage: null };
+      }
+      await supabase.from('xlan_bugs').update({ status: 'fixed', fixed_at: new Date().toISOString() }).eq('id', bugs[0].id);
+      return { result: `Bug 已標記修復：${bugs[0].description}`, flexMessage: null };
+    } catch (err) {
+      console.error('Fix bug error:', err.message);
+      return { result: `Bug 標記失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'get_priority_todos') {
+    try {
+      const { data: todos } = await supabase
+        .from('xlan_todos').select('*').eq('done', false).order('created_at', { ascending: true });
+      if (!todos || todos.length === 0) {
+        return { result: '目前沒有待辦事項！', flexMessage: null };
+      }
+      const urgent = todos.filter(t => t.priority === 'urgent');
+      const important = todos.filter(t => t.priority === 'important');
+      const normal = todos.filter(t => !t.priority || t.priority === 'normal');
+
+      let result = '🎯 今日優先順序\n';
+      if (urgent.length > 0) {
+        result += `\n🔴 緊急（${urgent.length}項）\n` + urgent.map(t => {
+          const src = t.source_person ? `[${t.source_person}] ` : '';
+          return `• ${src}${t.text}`;
+        }).join('\n');
+      }
+      if (important.length > 0) {
+        result += `\n\n🟡 重要（${important.length}項）\n` + important.map(t => {
+          const src = t.source_person ? `[${t.source_person}] ` : '';
+          return `• ${src}${t.text}`;
+        }).join('\n');
+      }
+      if (normal.length > 0) {
+        result += `\n\n⚪ 一般（${normal.length}項）\n` + normal.map(t => {
+          const src = t.source_person ? `[${t.source_person}] ` : '';
+          return `• ${src}${t.text}`;
+        }).join('\n');
+      }
+      result += '\n\n先處理紅色的，有問題隨時告訴我！';
+      return { result, flexMessage: null };
+    } catch (err) {
+      console.error('Priority todos error:', err.message);
+      return { result: `查詢失敗：${err.message}`, isError: true, flexMessage: null };
     }
   }
 

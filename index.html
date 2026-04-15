@@ -178,6 +178,16 @@ body { font-family:-apple-system,'Segoe UI',sans-serif; background:#f5f0ff; colo
     <button class="btn" onclick="showRecurringForm()" style="width:100%;margin-bottom:16px;">+ 新增定期付款</button>
     <div id="recurring-list"></div>
   </div>
+
+  <!-- Bug 追蹤 -->
+  <div id="page-bugs" class="page">
+    <div class="page-title">Bug 追蹤 <span class="badge" id="bug-badge">0</span></div>
+    <div id="bugs-pending"></div>
+    <div class="collapse-header" id="bugs-fixed-header" onclick="toggleFixedBugs()">
+      <span class="arrow">&#9654;</span> 已修復
+    </div>
+    <div class="collapse-body" id="bugs-fixed-body"></div>
+  </div>
 </div>
 
 <!-- Bottom Nav -->
@@ -187,6 +197,7 @@ body { font-family:-apple-system,'Segoe UI',sans-serif; background:#f5f0ff; colo
   <div class="nav-btn" onclick="switchPage('expenses')"><span class="icon">&#128176;</span>帳務</div>
   <div class="nav-btn" onclick="switchPage('events')"><span class="icon">&#128197;</span>行程</div>
   <div class="nav-btn" onclick="switchPage('recurring')"><span class="icon">&#128260;</span>定期</div>
+  <div class="nav-btn" onclick="switchPage('bugs')"><span class="icon">&#128027;</span>Bug</div>
 </div>
 
 <!-- Modal -->
@@ -234,7 +245,7 @@ liff.init({ liffId:'2009806013-ON2KtCsF' }).then(async () => {
 }).catch(e => console.error('LIFF init error', e));
 
 // --- Navigation ---
-const pages = ['todos','notes','expenses','events','recurring'];
+const pages = ['todos','notes','expenses','events','recurring','bugs'];
 function switchPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(n => n.classList.remove('active'));
@@ -245,6 +256,7 @@ function switchPage(name) {
   if (name==='expenses') loadExpenses();
   if (name==='events') loadEvents();
   if (name==='recurring') loadRecurring();
+  if (name==='bugs') loadBugs();
 }
 
 // --- Todos ---
@@ -254,20 +266,33 @@ async function loadTodos() {
   const done = data.filter(t=>t.done).slice(-20).reverse();
   document.getElementById('todo-badge').textContent = pending.length;
 
-  document.getElementById('todo-pending').innerHTML = pending.map(t=>`
-    <div class="card card-shadow" style="margin-bottom:10px;">
-      <div class="todo-card">
-        <div class="todo-check" onclick="toggleTodo('${t.id}',true)"></div>
-        <div class="todo-text">${esc(t.text)}<div class="todo-meta">${t.source_group?'群組':'私訊'} &middot; ${fmtDate(t.created_at)}</div></div>
-        <div class="todo-del" onclick="delTodo('${t.id}')">&times;</div>
-      </div>
-    </div>`).join('') || '<div class="empty">沒有待辦事項</div>';
+  const urgent = pending.filter(t=>t.priority==='urgent');
+  const important = pending.filter(t=>t.priority==='important');
+  const normal = pending.filter(t=>!t.priority||t.priority==='normal');
+
+  function renderGroup(label, items, color) {
+    if (items.length===0) return '';
+    return `<div style="font-size:13px;font-weight:600;color:${color};padding:8px 0 4px;">${label}（${items.length}）</div>`+
+      items.map(t=>{
+        const src = t.source_person ? `<span style="color:#9b6dff;">[${esc(t.source_person)}]</span> ` : '';
+        return `<div class="card card-shadow" style="margin-bottom:8px;border-left:3px solid ${color};">
+          <div class="todo-card">
+            <div class="todo-check" onclick="toggleTodo('${t.id}',true)"></div>
+            <div class="todo-text">${src}${esc(t.text)}<div class="todo-meta">${t.source_group?'群組':'私訊'} &middot; ${fmtDate(t.created_at)}</div></div>
+            <div class="todo-del" onclick="delTodo('${t.id}')">&times;</div>
+          </div>
+        </div>`;
+      }).join('');
+  }
+
+  const html = renderGroup('🔴 緊急', urgent, '#ef4444') + renderGroup('🟡 重要', important, '#f59e0b') + renderGroup('⚪ 一般', normal, '#a09ab0');
+  document.getElementById('todo-pending').innerHTML = html || '<div class="empty">沒有待辦事項</div>';
 
   document.getElementById('done-body').innerHTML = done.map(t=>`
     <div class="card" style="margin-bottom:8px;opacity:.5;">
       <div class="todo-card">
         <div class="todo-check done">&#10003;</div>
-        <div class="todo-text" style="text-decoration:line-through;">${esc(t.text)}<div class="todo-meta">${fmtDate(t.done_at||t.created_at)}</div></div>
+        <div class="todo-text" style="text-decoration:line-through;">${esc(t.text)}<div class="todo-meta">完成於 ${fmtDate(t.done_at||t.created_at)}</div></div>
       </div>
     </div>`).join('');
 }
@@ -438,6 +463,39 @@ async function saveRecurring() {
 async function toggleRecurring(id) {
   await api('/xlan_recurring?id=eq.'+id,{method:'PATCH',body:JSON.stringify({active:false})});
   loadRecurring();
+}
+
+// --- Bugs ---
+let bugsFixedOpen = false;
+function toggleFixedBugs() {
+  bugsFixedOpen = !bugsFixedOpen;
+  document.getElementById('bugs-fixed-header').classList.toggle('open', bugsFixedOpen);
+  document.getElementById('bugs-fixed-body').classList.toggle('open', bugsFixedOpen);
+}
+async function loadBugs() {
+  const data = await api('/xlan_bugs?order=created_at.desc&limit=100');
+  const pending = data.filter(b=>b.status==='pending');
+  const fixed = data.filter(b=>b.status==='fixed');
+  document.getElementById('bug-badge').textContent = pending.length;
+
+  document.getElementById('bugs-pending').innerHTML = pending.map(b=>`
+    <div class="card card-shadow" style="margin-bottom:10px;border-left:3px solid #ef4444;">
+      <div style="font-size:14px;color:#3d3552;">${esc(b.description)}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
+        <span style="font-size:11px;color:#a09ab0;">${b.reporter?esc(b.reporter)+'・':''}${fmtDate(b.created_at)}</span>
+        <button class="btn btn-sm" onclick="fixBug('${b.id}')" style="min-height:32px;padding:4px 12px;font-size:12px;">標記修復</button>
+      </div>
+    </div>`).join('') || '<div class="empty">沒有待修 Bug</div>';
+
+  document.getElementById('bugs-fixed-body').innerHTML = fixed.map(b=>`
+    <div class="card" style="margin-bottom:8px;opacity:.6;">
+      <div style="font-size:14px;text-decoration:line-through;color:#8b8b9e;">${esc(b.description)}</div>
+      <div style="font-size:11px;color:#a09ab0;margin-top:4px;">修復於 ${fmtDate(b.fixed_at||b.created_at)}</div>
+    </div>`).join('');
+}
+async function fixBug(id) {
+  await api('/xlan_bugs?id=eq.'+id, { method:'PATCH', body:JSON.stringify({ status:'fixed', fixed_at:new Date().toISOString() }) });
+  loadBugs();
 }
 
 // --- Utils ---
