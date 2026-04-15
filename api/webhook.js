@@ -298,9 +298,15 @@ account 判斷同記帳規則。
 當用戶問「XXX廠商電話是多少」「XXX付款條件」，呼叫 get_vendor 查詢。
 
 【專案管理】
-當用戶提到「XXX專案」並說要做哪些事，自動呼叫 create_project 建立專案並拆分工作項目。
-AI 根據專案類型自動推斷合理的工作項目。
-當用戶問「XXX做到哪了」「XXX進度」，呼叫 get_project_status。`;
+當用戶說「XXX專案」並列出多件要做的事，
+必須呼叫 create_project tool，不可以用 save_todo 逐一存入。
+create_project 會自動把工作項目存為待辦並關聯到專案。
+判斷標準：訊息裡有「專案」兩個字，或是列出多件相關工作。
+例如：「舒肥雞上架專案，要拍照、做圖文、上架」→ 呼叫 create_project
+tasks 陣列由 AI 根據用戶說的事情拆分，可以補充合理的子項目。
+
+當用戶問「XXX做到哪了」「XXX進度」「XXX專案狀況」，
+呼叫 get_project_status 查詢進度條。`;
 
 // --- Tool 定義 ---
 const SAVE_TODO_TOOL = {
