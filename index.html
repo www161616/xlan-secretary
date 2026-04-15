@@ -131,7 +131,7 @@ body { font-family:-apple-system,'Segoe UI',sans-serif; background:#f5f0ff; colo
 <div class="pages">
   <!-- 待辦 -->
   <div id="page-todos" class="page active">
-    <div class="page-title">待辦清單 <span class="badge" id="todo-badge">0</span></div>
+    <div class="page-title" style="justify-content:space-between;"><div>待辦清單 <span class="badge" id="todo-badge">0</span></div><button class="btn btn-sm btn-outline" onclick="exportTodos()">CSV</button></div>
     <div id="todo-pending"></div>
     <div class="collapse-header" id="done-header" onclick="toggleDone()">
       <span class="arrow">&#9654;</span> 已完成
@@ -713,6 +713,23 @@ async function loadBugs() {
 async function fixBug(id) {
   await api('/xlan_bugs?id=eq.'+id, { method:'PATCH', body:JSON.stringify({ status:'fixed', fixed_at:new Date().toISOString() }) });
   loadBugs();
+}
+
+// --- Export ---
+async function exportTodos() {
+  const data = await api('/xlan_todos?done=eq.false&order=created_at.asc');
+  if (!data.length) return alert('無資料');
+  let csv = '\uFEFF建立時間,內容,優先度,來源,狀態\n';
+  data.forEach(t=>{
+    const pri = {urgent:'緊急',important:'重要',normal:'一般'}[t.priority||'normal'];
+    csv += fmtDate(t.created_at)+','+t.text.replace(/,/g,'，')+','+pri+','+(t.source_person||'')+',未完成\n';
+  });
+  const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  const d = new Date();
+  a.download = '小瀾待辦_'+d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+'.csv';
+  a.click();
 }
 
 // --- Utils ---

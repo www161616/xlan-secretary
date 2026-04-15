@@ -306,7 +306,11 @@ create_project 會自動把工作項目存為待辦並關聯到專案。
 tasks 陣列由 AI 根據用戶說的事情拆分，可以補充合理的子項目。
 
 當用戶問「XXX做到哪了」「XXX進度」「XXX專案狀況」，
-呼叫 get_project_status 查詢進度條。`;
+呼叫 get_project_status 查詢進度條。
+
+【Bug 與付款查詢】
+當用戶說「待修bug清單」「有哪些bug」，呼叫 get_pending_bugs。
+當用戶說「有哪些待付款」「付款清單」，呼叫 get_pending_payables。`;
 
 // --- Tool 定義 ---
 const SAVE_TODO_TOOL = {
@@ -561,7 +565,19 @@ const GET_PROJECT_STATUS_TOOL = {
   },
 };
 
-const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL, SAVE_VENDOR_TOOL, GET_VENDOR_TOOL, CREATE_PROJECT_TOOL, GET_PROJECT_STATUS_TOOL];
+const GET_PENDING_BUGS_TOOL = {
+  name: 'get_pending_bugs',
+  description: '查詢待修 bug 清單。當用戶說「待修bug清單」「有哪些bug」時使用。',
+  input_schema: { type: 'object', properties: {} },
+};
+
+const GET_PENDING_PAYABLES_TOOL = {
+  name: 'get_pending_payables',
+  description: '查詢待付款清單。當用戶說「有哪些待付款」「付款清單」時使用。',
+  input_schema: { type: 'object', properties: {} },
+};
+
+const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL, SAVE_VENDOR_TOOL, GET_VENDOR_TOOL, CREATE_PROJECT_TOOL, GET_PROJECT_STATUS_TOOL, GET_PENDING_BUGS_TOOL, GET_PENDING_PAYABLES_TOOL];
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -956,6 +972,47 @@ async function handleToolUse(block, userMessage) {
       if (done.length > 0) result += `\n${done.map(t => `✅ ${t.text}`).join('\n')}`;
       if (pending.length > 0) result += `\n${pending.map(t => `🔲 ${t.text}`).join('\n')}`;
       return { result, flexMessage: null };
+    } catch (err) {
+      return { result: `查詢失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'get_pending_bugs') {
+    try {
+      const { data: bugs } = await supabase
+        .from('xlan_bugs').select('*').eq('status', 'pending').order('created_at', { ascending: false });
+      if (!bugs || bugs.length === 0) {
+        return { result: '目前沒有待修 Bug！', flexMessage: null };
+      }
+      const lines = bugs.map((b, i) => {
+        const reporter = b.reporter ? ` — ${b.reporter}` : '';
+        const date = new Date(b.created_at).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: '2-digit', day: '2-digit' });
+        return `${i + 1}. ${b.description}${reporter} / ${date}`;
+      });
+      return { result: `🐛 待修 Bug（共${bugs.length}項）\n\n${lines.join('\n')}`, flexMessage: null };
+    } catch (err) {
+      return { result: `查詢失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'get_pending_payables') {
+    try {
+      const { data: payables } = await supabase
+        .from('xlan_payables').select('*').eq('status', 'pending').order('due_date', { ascending: true, nullsFirst: false });
+      if (!payables || payables.length === 0) {
+        return { result: '目前沒有待付款項！', flexMessage: null };
+      }
+      const today = new Date().toISOString().split('T')[0];
+      const lines = payables.map(p => {
+        const amt = p.amount ? ` NT$${p.amount.toLocaleString()}` : '';
+        let dueLine = '（無到期日）';
+        if (p.due_date) {
+          const diff = Math.round((new Date(p.due_date) - new Date(today)) / 86400000);
+          dueLine = diff === 0 ? '（今天到期）' : diff === 1 ? '（明天到期）' : diff < 0 ? `（已過期${-diff}天）` : `（${diff}天後到期）`;
+        }
+        return `• 付給${p.to_whom}${amt}${dueLine}`;
+      });
+      return { result: `💸 待付款（共${payables.length}項）\n\n${lines.join('\n')}`, flexMessage: null };
     } catch (err) {
       return { result: `查詢失敗：${err.message}`, isError: true, flexMessage: null };
     }

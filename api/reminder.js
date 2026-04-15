@@ -238,6 +238,44 @@ async function checkCustomReminders(now) {
   return `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n未完成：\n${pendingLines}\n\n需要延後或調整什麼嗎？`;
 }
 
+// --- 月底財務總結 ---
+async function buildMonthlySummary(now) {
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  const monthStart = new Date(y, m, 1).toISOString();
+  const monthEnd = new Date(y, m + 1, 1).toISOString();
+  const monthLabel = `${m + 1}`;
+
+  const { data: expenses } = await supabase
+    .from('xlan_expenses').select('*')
+    .gte('created_at', monthStart).lt('created_at', monthEnd);
+
+  const biz = (expenses || []).filter(e => e.account === 'business');
+  const personal = (expenses || []).filter(e => e.account === 'personal');
+  const sum = (arr, type) => arr.filter(e => e.type === type).reduce((s, e) => s + e.amount, 0);
+
+  const bizIncome = sum(biz, 'income'), bizExpense = sum(biz, 'expense');
+  const perIncome = sum(personal, 'income'), perExpense = sum(personal, 'expense');
+
+  // 完成待辦數
+  const { count: doneCount } = await supabase
+    .from('xlan_todos').select('*', { count: 'exact', head: true }).eq('done', true)
+    .gte('done_at', monthStart).lt('done_at', monthEnd);
+
+  // 修復 bug 數
+  const { count: fixedCount } = await supabase
+    .from('xlan_bugs').select('*', { count: 'exact', head: true }).eq('status', 'fixed')
+    .gte('fixed_at', monthStart).lt('fixed_at', monthEnd);
+
+  // 未完成待辦前5
+  const { data: pending } = await supabase
+    .from('xlan_todos').select('text').eq('done', false)
+    .order('created_at', { ascending: true }).limit(5);
+  const pendingLines = (pending || []).map(t => `- ${t.text}`).join('\n') || '（無）';
+
+  return `📊 ${monthLabel}月財務總結\n\n💼 公司帳\n收入：NT$${bizIncome.toLocaleString()}\n支出：NT$${bizExpense.toLocaleString()}\n淨額：NT$${(bizIncome - bizExpense).toLocaleString()}\n\n👤 私人帳\n收入：NT$${perIncome.toLocaleString()}\n支出：NT$${perExpense.toLocaleString()}\n淨額：NT$${(perIncome - perExpense).toLocaleString()}\n\n✅ 本月完成待辦：${doneCount || 0}項\n🐛 本月修復Bug：${fixedCount || 0}項\n\n📋 未完成待辦（前5項）\n${pendingLines}`;
+}
+
 // --- Main Handler ---
 module.exports = async (req, res) => {
   try {
@@ -280,6 +318,14 @@ module.exports = async (req, res) => {
     if (customMsg) {
       await pushMessage(ownerLineId, customMsg);
       sent.push('custom');
+    }
+
+    // 5. 月底財務總結（每月最後一天 21 點）
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    if (now.getDate() === lastDay && currentHour === 21) {
+      const summary = await buildMonthlySummary(now);
+      await pushMessage(ownerLineId, summary);
+      sent.push('monthly_summary');
     }
 
     return res.status(200).json({ ok: true, hour: currentHour, sent });

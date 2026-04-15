@@ -92,6 +92,9 @@ xlan-secretary/
 20. **應付款** — save_payable tool，付款後自動存入 xlan_expenses
 21. **廠商管理** — save_vendor / get_vendor tools
 22. **專案管理** — create_project（自動拆分工作項目到 xlan_todos）/ get_project_status（進度條）
+23. **Bug 清單查詢** — get_pending_bugs tool
+24. **付款清單查詢** — get_pending_payables tool
+25. **月底財務總結** — 每月最後一天 21 點自動推送（公司帳/私人帳/完成待辦/修復 Bug）
 
 ### 每小時提醒系統（api/reminder.js）
 
@@ -135,6 +138,8 @@ xlan-secretary/
 | `get_vendor` | 查詢廠商資料 |
 | `create_project` | 建立專案 + 自動拆分工作項目 |
 | `get_project_status` | 查詢專案進度 |
+| `get_pending_bugs` | 查詢待修 bug 清單 |
+| `get_pending_payables` | 查詢待付款清單 |
 
 ## 待辦功能
 
