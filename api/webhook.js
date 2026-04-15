@@ -52,16 +52,27 @@ async function createCalendarEvent({ title, date, time, duration_minutes, locati
   if (description) event.description = description;
 
   const res = await calendar.events.insert({ calendarId: 'primary', requestBody: event });
+
+  // 同步寫入 xlan_events
+  await supabase.from('xlan_events').insert({
+    title,
+    date,
+    time: time || null,
+    location: location || null,
+    description: description || null,
+  });
+
   return res.data;
 }
 
 // --- 記帳功能 ---
-async function saveExpense({ amount, category, note, type }) {
+async function saveExpense({ amount, category, note, type, account }) {
   const { data, error } = await supabase.from('xlan_expenses').insert({
     amount,
     category,
     note: note || null,
     type: type || 'expense',
+    account: account || 'personal',
   }).select();
   if (error) throw new Error(error.message);
   return data[0];
@@ -100,10 +111,11 @@ async function downloadLineImage(messageId) {
 }
 
 // --- Flex Message：記帳卡片 ---
-function buildExpenseFlexMessage({ amount, category, note, type, label }) {
+function buildExpenseFlexMessage({ amount, category, note, type, account, label }) {
   const isIncome = type === 'income';
   const color = isIncome ? '#4CAF50' : '#FF6B6B';
   const typeText = isIncome ? '收入' : '支出';
+  const accountText = account === 'business' ? '公司' : '私人';
   const now = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 
   return {
@@ -127,15 +139,12 @@ function buildExpenseFlexMessage({ amount, category, note, type, label }) {
               size: 'xxs',
               color: '#FFFFFF',
               weight: 'bold',
-              backgroundColor: 'rgba(0,0,0,0.2)',
-              paddingAll: '4px',
-              borderRadius: '4px',
             }],
             justifyContent: 'flex-end',
           }] : []),
           {
             type: 'text',
-            text: typeText,
+            text: `${typeText}・${accountText}`,
             size: 'sm',
             color: '#FFFFFF90',
           },
@@ -232,10 +241,21 @@ const SYSTEM_PROMPT = `你是「小瀾」，香奈的專屬 AI 秘書。
 類別從以下選一個最接近的：餐飲、交通、購物、娛樂、醫療、水電、薪資、業務收入、其他。
 note 填用戶的原始說法摘要。
 type 判斷：花錢/付款/買東西 = expense，收到錢/營收/薪資入帳 = income。
-存完回覆格式：「💰 已記帳：{類別} NT${金額}」。
+account 判斷：提到廠商名稱、進貨、業務往來、門市費用 = business；日常餐飲、交通、個人購物 = personal。不確定時預設 personal，但告知用戶可以說「這筆算公司的」修改。
+存完回覆格式：「💰 已記帳：{類別} NT${金額}（{私人/公司}）」。
 
 當用戶問「今天花了多少」「這週收支」「這個月帳目」等，呼叫 get_expenses 查詢。
-查詢結果用條列式回覆，包含總收入、總支出、淨額、各筆明細。`;
+查詢結果用條列式回覆，包含總收入、總支出、淨額、各筆明細。
+
+【筆記功能】
+當用戶說「記一下」「備忘」「筆記」「記住」等，或提到重要資訊但不是待辦也不是帳務，呼叫 save_note 儲存。
+存完回覆「📝 已記錄筆記」。
+tags 根據內容自動分類，例如 ["業務","門市"]、["個人"]、["ERP"] 等。
+
+【定期付款】
+當用戶提到「每個月」「每年」「固定」「定期」付款或費用，呼叫 save_recurring 儲存。
+存完回覆「🔁 已設定定期提醒：{名稱} 每月{N}號 NT${金額}」。
+account 判斷同記帳規則。`;
 
 // --- Tool 定義 ---
 const SAVE_TODO_TOOL = {
@@ -244,10 +264,7 @@ const SAVE_TODO_TOOL = {
   input_schema: {
     type: 'object',
     properties: {
-      task: {
-        type: 'string',
-        description: '待辦事項摘要，繁體中文，20字以內',
-      },
+      task: { type: 'string', description: '待辦事項摘要，繁體中文，20字以內' },
     },
     required: ['task'],
   },
@@ -280,6 +297,7 @@ const SAVE_EXPENSE_TOOL = {
       category: { type: 'string', description: '類別：餐飲、交通、購物、娛樂、醫療、水電、薪資、業務收入、其他' },
       note: { type: 'string', description: '備註，用戶的原始說法摘要' },
       type: { type: 'string', enum: ['expense', 'income'], description: 'expense=支出, income=收入' },
+      account: { type: 'string', enum: ['personal', 'business'], description: 'personal=私人, business=公司' },
     },
     required: ['amount', 'category', 'type'],
   },
@@ -297,7 +315,38 @@ const GET_EXPENSES_TOOL = {
   },
 };
 
-const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL];
+const SAVE_NOTE_TOOL = {
+  name: 'save_note',
+  description: '記錄一則筆記、備忘或重要資訊。當用戶說「記一下」「備忘」「筆記」「記住」等時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      content: { type: 'string', description: '筆記內容' },
+      tags: { type: 'array', items: { type: 'string' }, description: '標籤，例如 ["業務","門市"]' },
+    },
+    required: ['content'],
+  },
+};
+
+const SAVE_RECURRING_TOOL = {
+  name: 'save_recurring',
+  description: '儲存定期付款或固定費用提醒。當用戶提到「每個月」「每年」「固定」「定期」付款時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: '名稱，例如「房租」「信用卡」' },
+      amount: { type: ['number', 'null'], description: '金額，不確定可為 null' },
+      account: { type: 'string', enum: ['personal', 'business'], description: 'personal=私人, business=公司' },
+      frequency: { type: 'string', enum: ['monthly', 'yearly'], description: '頻率' },
+      day_of_month: { type: 'number', description: '幾號，1-31' },
+      month_of_year: { type: ['number', 'null'], description: '幾月，yearly 才需要，1-12' },
+      note: { type: 'string', description: '備註' },
+    },
+    required: ['title', 'frequency', 'day_of_month'],
+  },
+};
+
+const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, SAVE_RECURRING_TOOL];
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -310,11 +359,9 @@ function validateSignature(body, signature) {
 
 // --- LINE 回覆訊息（支援 text 或 flex message 陣列）---
 async function replyMessage(replyToken, messages) {
-  // 如果傳入的是字串，包成 text message
   if (typeof messages === 'string') {
     messages = [{ type: 'text', text: messages }];
   }
-  // 如果傳入的是單一物件（非陣列），包成陣列
   if (!Array.isArray(messages)) {
     messages = [messages];
   }
@@ -385,9 +432,11 @@ async function handleToolUse(block, userMessage) {
         category: block.input.category,
         note: block.input.note,
         type: block.input.type,
+        account: block.input.account || 'personal',
         label: block.input._label || null,
       });
-      return { result: `已記帳：${block.input.type === 'income' ? '收入' : '支出'} ${block.input.category} NT$${block.input.amount}`, flexMessage: flex };
+      const accountLabel = (block.input.account === 'business') ? '公司' : '私人';
+      return { result: `已記帳：${block.input.type === 'income' ? '收入' : '支出'} ${block.input.category} NT$${block.input.amount}（${accountLabel}）`, flexMessage: flex };
     } catch (err) {
       console.error('Expense error:', err.message);
       return { result: `記帳失敗：${err.message}`, isError: true, flexMessage: null };
@@ -404,8 +453,9 @@ async function handleToolUse(block, userMessage) {
     const totalExpense = expenses.filter((e) => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
     const details = expenses.map((e) => {
       const icon = e.type === 'income' ? '📈' : '📉';
+      const acct = e.account === 'business' ? '[公司]' : '';
       const dateStr = new Date(e.created_at).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-      return `${icon} ${e.category} NT$${e.amount}${e.note ? '（' + e.note + '）' : ''} - ${dateStr}`;
+      return `${icon}${acct} ${e.category} NT$${e.amount}${e.note ? '（' + e.note + '）' : ''} - ${dateStr}`;
     }).join('\n');
     return {
       result: `${periodLabel}收支摘要：\n收入：NT$${totalIncome}\n支出：NT$${totalExpense}\n淨額：NT$${totalIncome - totalExpense}\n\n明細：\n${details}`,
@@ -413,11 +463,44 @@ async function handleToolUse(block, userMessage) {
     };
   }
 
+  if (block.name === 'save_note') {
+    try {
+      await supabase.from('xlan_notes').insert({
+        content: block.input.content,
+        tags: block.input.tags || [],
+      });
+      return { result: `已記錄筆記：${block.input.content.substring(0, 30)}`, flexMessage: null };
+    } catch (err) {
+      console.error('Note error:', err.message);
+      return { result: `筆記儲存失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'save_recurring') {
+    try {
+      await supabase.from('xlan_recurring').insert({
+        title: block.input.title,
+        amount: block.input.amount || null,
+        account: block.input.account || 'personal',
+        frequency: block.input.frequency,
+        day_of_month: block.input.day_of_month,
+        month_of_year: block.input.month_of_year || null,
+        note: block.input.note || null,
+      });
+      const freqText = block.input.frequency === 'yearly' ? '每年' : '每月';
+      const amtText = block.input.amount ? ` NT$${block.input.amount}` : '';
+      return { result: `已設定定期提醒：${block.input.title} ${freqText}${block.input.day_of_month}號${amtText}`, flexMessage: null };
+    } catch (err) {
+      console.error('Recurring error:', err.message);
+      return { result: `定期付款設定失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
   return { result: '未知工具', flexMessage: null };
 }
 
 // --- Claude API：AI 對話（支援 tool use）---
-async function chatWithClaude(userId, userContent, options = {}) {
+async function chatWithClaude(userId, userContent) {
   const { data: history } = await supabase
     .from('xlan_conversations')
     .select('role, content')
@@ -530,6 +613,11 @@ function isMentioned(event) {
   return mention.mentionees.some((m) => m.type === 'all' || m.isSelf === true);
 }
 
+// --- 儲存 owner LINE ID ---
+async function saveOwnerLineId(userId) {
+  await supabase.from('xlan_kv').upsert({ key: 'owner_line_id', value: userId });
+}
+
 // --- 群組訊息處理 ---
 async function handleGroupMessage(event) {
   const msgType = event.message.type;
@@ -571,8 +659,10 @@ async function handleDirectMessage(event) {
   const msgType = event.message.type;
   const userId = event.source.userId;
 
+  // 儲存 owner LINE ID（首次私訊時 upsert）
+  saveOwnerLineId(userId).catch((err) => console.error('saveOwnerLineId error:', err));
+
   if (msgType === 'image') {
-    // 圖片記帳
     try {
       const base64Data = await downloadLineImage(event.message.id);
       const imageContent = [
@@ -587,10 +677,8 @@ async function handleDirectMessage(event) {
       ];
 
       const { reply, flexMessages } = await chatWithClaude(userId, imageContent);
-      // 加上「📷 圖片判讀」標籤
       const labeledFlex = flexMessages.map((f) => {
         if (f.contents && f.contents.body && f.contents.body.contents) {
-          // 在卡片最前面加標籤（如果 handleToolUse 沒加的話）
           const hasLabel = f.contents.body.contents[0] && f.contents.body.contents[0].contents &&
             f.contents.body.contents[0].contents[0] && f.contents.body.contents[0].contents[0].text === '📷 圖片判讀';
           if (!hasLabel) {
@@ -629,18 +717,13 @@ async function handleDirectMessage(event) {
 
   let replyMessages;
 
-  // 快捷指令：列出待辦
   if (/^(待辦|清單|有什麼事)$/.test(text)) {
     replyMessages = [{ type: 'text', text: await listTodos() }];
-  }
-  // 快捷指令：完成/刪除第N項
-  else if (/^(完成|刪除)第(\d+)項$/.test(text)) {
+  } else if (/^(完成|刪除)第(\d+)項$/.test(text)) {
     const match = text.match(/^(完成|刪除)第(\d+)項$/);
     const n = parseInt(match[2], 10);
     replyMessages = [{ type: 'text', text: await completeTodo(n) }];
-  }
-  // AI 處理
-  else {
+  } else {
     const { reply, flexMessages } = await chatWithClaude(userId, text);
     replyMessages = [];
     if (flexMessages.length > 0) replyMessages.push(...flexMessages);

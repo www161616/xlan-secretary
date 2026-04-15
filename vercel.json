@@ -1,3 +1,7 @@
 {
-  "rewrites": [{ "source": "/webhook", "destination": "/api/webhook" }]
+  "rewrites": [{ "source": "/webhook", "destination": "/api/webhook" }],
+  "crons": [{
+    "path": "/api/reminder",
+    "schedule": "0 1 * * *"
+  }]
 }

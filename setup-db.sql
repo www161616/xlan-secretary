@@ -25,14 +25,65 @@ CREATE TABLE IF NOT EXISTS xlan_expenses (
   category text NOT NULL,
   note text,
   type text NOT NULL DEFAULT 'expense',
+  account text NOT NULL DEFAULT 'personal',
   created_at timestamptz DEFAULT now()
+);
+
+-- 記事本
+CREATE TABLE IF NOT EXISTS xlan_notes (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  content text NOT NULL,
+  tags text[],
+  created_at timestamptz DEFAULT now()
+);
+
+-- 行程快取
+CREATE TABLE IF NOT EXISTS xlan_events (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  title text NOT NULL,
+  date text NOT NULL,
+  time text,
+  location text,
+  description text,
+  created_at timestamptz DEFAULT now()
+);
+
+-- 定期付款
+CREATE TABLE IF NOT EXISTS xlan_recurring (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  title text NOT NULL,
+  amount integer,
+  account text NOT NULL DEFAULT 'personal',
+  frequency text NOT NULL,
+  day_of_month integer,
+  month_of_year integer,
+  note text,
+  active boolean DEFAULT true,
+  created_at timestamptz DEFAULT now()
+);
+
+-- KV 設定
+CREATE TABLE IF NOT EXISTS xlan_kv (
+  key text PRIMARY KEY,
+  value text NOT NULL
 );
 
 -- RLS
 ALTER TABLE xlan_todos ENABLE ROW LEVEL SECURITY;
 ALTER TABLE xlan_conversations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE xlan_expenses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE xlan_notes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE xlan_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE xlan_recurring ENABLE ROW LEVEL SECURITY;
+ALTER TABLE xlan_kv ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY IF NOT EXISTS "anon_all_todos" ON xlan_todos FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY IF NOT EXISTS "anon_all_conversations" ON xlan_conversations FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY IF NOT EXISTS "anon_all_expenses" ON xlan_expenses FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY IF NOT EXISTS "anon_all_notes" ON xlan_notes FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY IF NOT EXISTS "anon_all_events" ON xlan_events FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY IF NOT EXISTS "anon_all_recurring" ON xlan_recurring FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY IF NOT EXISTS "anon_all_kv" ON xlan_kv FOR ALL USING (true) WITH CHECK (true);
+
+-- 欄位補丁（已存在的表加欄位）
+ALTER TABLE xlan_expenses ADD COLUMN IF NOT EXISTS account text NOT NULL DEFAULT 'personal';
