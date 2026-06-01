@@ -1772,7 +1772,16 @@ module.exports = async (req, res) => {
   const events = body.events || [];
 
   for (const event of events) {
-    if (event.type !== 'message') continue;
+    if (event.type !== 'message') {
+      console.log('non_message_event', {
+        type: event.type,
+        sourceType: event.source?.type,
+        groupId: event.source?.groupId,
+        roomId: event.source?.roomId,
+        userId: event.source?.userId,
+      });
+      continue;
+    }
     const msgType = event.message.type;
     if (msgType !== 'text' && msgType !== 'image') continue;
 
