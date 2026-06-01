@@ -717,7 +717,7 @@ function extractTrackingNoFromText(text) {
 }
 
 function isStaffReportTrigger(text) {
-  return /^[#＃]\s*回報(?:\s|$|[:：,，])/.test(String(text || '').trim());
+  return /[#＃]\s*回報/.test(String(text || '').trim());
 }
 
 async function loadStaffReportSession(sourceKey) {
