@@ -236,7 +236,7 @@ const SYSTEM_PROMPT = `【回覆規則】
 1. 絕對不可以主動說明如何把Bot加進群組
 2. 絕對不可以說「直接把我加進LINE群組就可以了」
 3. 絕對不可以說「對！你說得沒錯」作為開頭
-4. 收到「完成」「已完成」「做好了」這類訊息，直接回覆「✅ 了解，已記錄完成」，不要追問其他問題
+4. 收到「完成」「已完成」「做好了」「處理好了」這類訊息，如果能從訊息判斷是哪一件待辦，就一定要呼叫 complete_todo 標記完成；不能判斷是哪一件時，請用一句話請用戶補關鍵字或回「完成第N項」
 5. 回覆要簡短直接，不要超過3行，除非用戶需要詳細資訊
 
 你是「小瀾」，香奈的專屬 AI 秘書。
@@ -303,7 +303,8 @@ account 判斷同記帳規則。
 你自己就能做到。
 
 【完成與延後】
-當用戶說「完成」「辦完了」「OK了」，表示最近追蹤的事項已完成，正常回覆確認。
+當用戶說「完成」「辦完了」「OK了」「處理好了」，如果有提到待辦關鍵字，例如「龍潭付款完成」「菜單好了」「廠商回覆了」，呼叫 complete_todo。
+如果只說「完成」但沒有目標，不要假裝完成，要回覆「是哪一件完成？可以回：完成第1項，或說完成的事項關鍵字。」
 當用戶說「延後」「改到X點」「明天再做」，幫忙更新對應行程。
 
 【Bug 追蹤】
@@ -355,6 +356,18 @@ const SAVE_TODO_TOOL = {
       source_person: { type: ['string', 'null'], description: '誰交辦的，沒有就 null' },
     },
     required: ['task'],
+  },
+};
+
+const COMPLETE_TODO_TOOL = {
+  name: 'complete_todo',
+  description: '標記待辦事項完成。當用戶說某件事完成、處理好了、OK了、已辦完時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      keyword: { type: 'string', description: '用來搜尋待辦的關鍵字，例如「龍潭付款」「菜單」「廠商」；如果完全沒有目標就填空字串' },
+    },
+    required: ['keyword'],
   },
 };
 
@@ -608,7 +621,7 @@ const GET_PENDING_PAYABLES_TOOL = {
   input_schema: { type: 'object', properties: {} },
 };
 
-const ALL_TOOLS = [SAVE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL, SAVE_VENDOR_TOOL, GET_VENDOR_TOOL, CREATE_PROJECT_TOOL, GET_PROJECT_STATUS_TOOL, GET_PENDING_BUGS_TOOL, GET_PENDING_PAYABLES_TOOL];
+const ALL_TOOLS = [SAVE_TODO_TOOL, COMPLETE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL, SAVE_VENDOR_TOOL, GET_VENDOR_TOOL, CREATE_PROJECT_TOOL, GET_PROJECT_STATUS_TOOL, GET_PENDING_BUGS_TOOL, GET_PENDING_PAYABLES_TOOL];
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -1095,6 +1108,24 @@ async function handleStaffReportEvent(event) {
   return false;
 }
 
+function normalizeTodoText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[，。！？、,.!?;；:：\s"'「」『』（）()【】\[\]#]/g, '')
+    .replace(/完成|已完成|做好了|好了|ok|OK|處理好了|辦完了|結束了|刪除/g, '');
+}
+
+function scoreTodoMatch(keyword, text) {
+  if (!keyword || !text) return 0;
+  if (text.includes(keyword)) return keyword.length + 10;
+  let score = 0;
+  const parts = keyword.match(/[\u4e00-\u9fa5A-Za-z0-9]{2,}/g) || [];
+  for (const part of parts) {
+    if (text.includes(part)) score += part.length;
+  }
+  return score;
+}
+
 // --- 處理 tool use 結果 ---
 async function handleToolUse(block, userMessage) {
   if (block.name === 'save_todo' && block.input.task) {
@@ -1106,6 +1137,60 @@ async function handleToolUse(block, userMessage) {
     });
     const pLabel = { urgent: '🔴', important: '🟡', normal: '' }[block.input.priority || 'normal'];
     return { result: `已存入待辦${pLabel}：${block.input.task}`, flexMessage: null };
+  }
+
+  if (block.name === 'complete_todo') {
+    try {
+      const keyword = String(block.input.keyword || '').trim();
+      if (!keyword) {
+        const { data: todos } = await supabase
+          .from('xlan_todos')
+          .select('*')
+          .eq('done', false)
+          .order('created_at', { ascending: true })
+          .limit(5);
+        const list = (todos || []).map((t, i) => `${i + 1}. ${t.text}`).join('\n');
+        return {
+          result: `是哪一件完成？可以回「完成第1項」，或說完成的事項關鍵字。\n${list || '目前沒有未完成待辦。'}`,
+          flexMessage: null,
+        };
+      }
+
+      const { data: todos } = await supabase
+        .from('xlan_todos')
+        .select('*')
+        .eq('done', false)
+        .order('created_at', { ascending: true })
+        .limit(100);
+
+      const normalizedKeyword = normalizeTodoText(keyword);
+      const candidates = (todos || [])
+        .map((todo) => ({
+          todo,
+          score: scoreTodoMatch(normalizedKeyword, normalizeTodoText(`${todo.text || ''} ${todo.source_message || ''} ${todo.project_name || ''}`)),
+        }))
+        .filter((item) => item.score > 0)
+        .sort((a, b) => b.score - a.score);
+
+      if (candidates.length === 0) {
+        return { result: `找不到包含「${keyword}」的未完成待辦。你可以回「待辦」看清單。`, flexMessage: null };
+      }
+
+      const best = candidates[0];
+      if (candidates.length > 1 && best.score === candidates[1].score && best.score < 8) {
+        const options = candidates.slice(0, 5).map((item, i) => `${i + 1}. ${item.todo.text}`).join('\n');
+        return { result: `找到幾個可能的待辦，請回「完成第N項」：\n${options}`, flexMessage: null };
+      }
+
+      await supabase
+        .from('xlan_todos')
+        .update({ done: true, done_at: new Date().toISOString() })
+        .eq('id', best.todo.id);
+      return { result: `✅ 已完成：「${best.todo.text}」`, flexMessage: null };
+    } catch (err) {
+      console.error('Complete todo error:', err.message);
+      return { result: `標記完成失敗：${err.message}`, isError: true, flexMessage: null };
+    }
   }
 
   if (block.name === 'create_calendar_event' && block.input.title) {
