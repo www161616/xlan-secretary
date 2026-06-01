@@ -13,6 +13,12 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
 const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
+const GOOGLE_VISION_API_KEY = process.env.GOOGLE_VISION_API_KEY;
+const STAFF_REPORT_SPREADSHEET_ID = process.env.STAFF_REPORT_SPREADSHEET_ID;
+const STAFF_REPORT_IMAGE_FOLDER_ID = process.env.STAFF_REPORT_IMAGE_FOLDER_ID;
+const STAFF_REPORT_SHEET_NAME = process.env.STAFF_REPORT_SHEET_NAME || '員工問題回報';
+const STAFF_REPORT_ORDER_SHEET_NAME = process.env.STAFF_REPORT_ORDER_SHEET_NAME || '所有訂單';
+const STAFF_REPORT_GROUP_ID = process.env.STAFF_REPORT_GROUP_ID;
 
 // --- 初始化 ---
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -23,6 +29,20 @@ function getCalendarClient() {
   const oauth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
   oauth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
   return google.calendar({ version: 'v3', auth: oauth2Client });
+}
+
+function getGoogleOAuthClient() {
+  const oauth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
+  oauth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
+  return oauth2Client;
+}
+
+function getSheetsClient() {
+  return google.sheets({ version: 'v4', auth: getGoogleOAuthClient() });
+}
+
+function getDriveClient() {
+  return google.drive({ version: 'v3', auth: getGoogleOAuthClient() });
 }
 
 async function createCalendarEvent({ title, date, time, duration_minutes, location, description }) {
@@ -102,12 +122,16 @@ async function getExpenses(period) {
 
 // --- LINE 下載圖片 ---
 async function downloadLineImage(messageId) {
+  const buffer = await downloadLineImageBuffer(messageId);
+  return buffer.toString('base64');
+}
+
+async function downloadLineImageBuffer(messageId) {
   const res = await fetch(`https://api-data.line.me/v2/bot/message/${messageId}/content`, {
     headers: { Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}` },
   });
   if (!res.ok) throw new Error(`Failed to download image: ${res.status}`);
-  const buffer = Buffer.from(await res.arrayBuffer());
-  return buffer.toString('base64');
+  return Buffer.from(await res.arrayBuffer());
 }
 
 // --- Flex Message：記帳卡片 ---
@@ -641,6 +665,341 @@ async function judgeTask(messageText) {
   }
 }
 
+// --- 員工 LINE 回報：運單照片 + 問題照片 + 少3/破2 ---
+function staffReportEnabled() {
+  return Boolean(GOOGLE_VISION_API_KEY && STAFF_REPORT_SPREADSHEET_ID);
+}
+
+function staffReportSourceAllowed(source) {
+  if (!STAFF_REPORT_GROUP_ID) return true;
+  return source && source.groupId === STAFF_REPORT_GROUP_ID;
+}
+
+function getStaffSourceKey(source) {
+  if (!source) return 'unknown';
+  return ['staff_report', source.type || 'unknown', source.groupId || source.roomId || '', source.userId || ''].join(':');
+}
+
+function parseStaffProblemText(text) {
+  const s = String(text || '')
+    .replace(/回報/g, '')
+    .replace(/\s+/g, '')
+    .replace(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xFEE0));
+  const patterns = [
+    { type: '少貨', re: /(少貨|少來|短少|少)(\d+)/ },
+    { type: '破損', re: /(破損|破掉|破)(\d+)/ },
+    { type: '錯貨', re: /(錯貨|錯)(\d+)/ },
+    { type: '多貨', re: /(多貨|多)(\d+)/ },
+  ];
+  for (const p of patterns) {
+    const m = s.match(p.re);
+    if (m) return { type: p.type, qty: Number(m[2]) || 1, raw: text };
+  }
+  return null;
+}
+
+function looksLikeStaffReportText(text) {
+  return Boolean(parseStaffProblemText(text)) || /^回報\b/.test(String(text || '').trim());
+}
+
+async function loadStaffReportSession(sourceKey) {
+  const { data } = await supabase.from('xlan_kv').select('value').eq('key', sourceKey).single();
+  if (!data || !data.value) return { images: [] };
+  try {
+    return JSON.parse(data.value);
+  } catch {
+    return { images: [] };
+  }
+}
+
+async function saveStaffReportSession(sourceKey, session) {
+  await supabase.from('xlan_kv').upsert({
+    key: sourceKey,
+    value: JSON.stringify({ ...session, updated_at: new Date().toISOString() }),
+  });
+}
+
+async function clearStaffReportSession(sourceKey) {
+  await supabase.from('xlan_kv').delete().eq('key', sourceKey);
+}
+
+async function getLineDisplayName(source) {
+  if (!source || !source.userId) return '';
+  try {
+    const url = source.type === 'group' && source.groupId
+      ? `https://api.line.me/v2/bot/group/${encodeURIComponent(source.groupId)}/member/${encodeURIComponent(source.userId)}`
+      : `https://api.line.me/v2/bot/profile/${encodeURIComponent(source.userId)}`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}` },
+    });
+    if (!res.ok) return source.userId;
+    const data = await res.json();
+    return data.displayName || source.userId;
+  } catch {
+    return source.userId;
+  }
+}
+
+async function uploadStaffImageToDrive(buffer, filename) {
+  if (!STAFF_REPORT_IMAGE_FOLDER_ID) return '';
+  const drive = getDriveClient();
+  const res = await drive.files.create({
+    requestBody: {
+      name: filename,
+      parents: [STAFF_REPORT_IMAGE_FOLDER_ID],
+    },
+    media: {
+      mimeType: 'image/jpeg',
+      body: require('stream').Readable.from(buffer),
+    },
+    fields: 'id,webViewLink',
+  });
+  return res.data.webViewLink || (res.data.id ? `https://drive.google.com/file/d/${res.data.id}/view` : '');
+}
+
+async function ocrStaffImage(base64Data) {
+  const res = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${encodeURIComponent(GOOGLE_VISION_API_KEY)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requests: [{
+        image: { content: base64Data },
+        features: [{ type: 'TEXT_DETECTION' }],
+      }],
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Vision OCR failed: ${JSON.stringify(data)}`);
+  return data.responses?.[0]?.textAnnotations?.[0]?.description || '';
+}
+
+function cleanStaffKey(value) {
+  return String(value || '').trim().replace(/^="?/, '').replace(/"$/, '').replace(/^["']|["']$/g, '').toUpperCase();
+}
+
+function splitStaffKeys(value) {
+  return String(value || '')
+    .split(/[;；,，、\s]+/)
+    .map(cleanStaffKey)
+    .filter(Boolean);
+}
+
+function extractTrackingNoFromOcr(text) {
+  const compact = String(text || '').toUpperCase().replace(/[^\dA-Z]/g, ' ');
+  const candidates = [];
+  const re = /\b([A-Z]{1,5}\d{7,20}|\d{9,20})\b/g;
+  let m;
+  while ((m = re.exec(compact)) !== null) {
+    const value = m[1];
+    if (/^20\d{6,}$/.test(value)) continue;
+    candidates.push(value);
+  }
+  if (!candidates.length) return '';
+  candidates.sort((a, b) => scoreTrackingCandidate(b) - scoreTrackingCandidate(a));
+  return candidates[0];
+}
+
+function scoreTrackingCandidate(value) {
+  let score = 0;
+  if (/^[A-Z]{1,5}\d+$/.test(value)) score += 4;
+  if (/^\d{10,16}$/.test(value)) score += 3;
+  if (value.length >= 10 && value.length <= 18) score += 2;
+  if (/^1\d{11,}$/.test(value)) score += 1;
+  return score;
+}
+
+async function findOrderByTrackingNo(trackingNo) {
+  const sheets = getSheetsClient();
+  const range = `${STAFF_REPORT_ORDER_SHEET_NAME}!A:T`;
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: STAFF_REPORT_SPREADSHEET_ID,
+    range,
+  });
+  const rows = res.data.values || [];
+  const target = cleanStaffKey(trackingNo);
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i] || [];
+    const tracks = splitStaffKeys(row[3] || ''); // D 運單號碼
+    if (!tracks.includes(target)) continue;
+    return {
+      found: true,
+      rowNumber: i + 1,
+      orderNo: row[2] || '',
+      trackingNo: target,
+      rawTrackingNo: row[3] || '',
+      productId: row[14] || '',
+      productName: row[15] || row[4] || '',
+      qty: row[6] || '',
+      usage: row[13] || '',
+      destination: row[12] || '',
+      offerId: row[19] || '',
+    };
+  }
+  return { found: false };
+}
+
+async function ensureStaffReportSheet() {
+  const sheets = getSheetsClient();
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: STAFF_REPORT_SPREADSHEET_ID });
+  const exists = (meta.data.sheets || []).some((s) => s.properties?.title === STAFF_REPORT_SHEET_NAME);
+  if (!exists) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: STAFF_REPORT_SPREADSHEET_ID,
+      requestBody: {
+        requests: [{ addSheet: { properties: { title: STAFF_REPORT_SHEET_NAME } } }],
+      },
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: STAFF_REPORT_SPREADSHEET_ID,
+      range: `${STAFF_REPORT_SHEET_NAME}!A1:R1`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: {
+        values: [[
+          '回報時間', '員工', 'LINE來源', '運單號', '1688訂單號', '商品編號',
+          '商品名稱', '原訂數量', '用途', '問題類型', '問題數量', '員工文字',
+          '運單照片', '問題照片', '狀態', '備註', '所有訂單列號', 'Offer ID',
+        ]],
+      },
+    });
+  }
+}
+
+async function appendStaffReport(row) {
+  await ensureStaffReportSheet();
+  const sheets = getSheetsClient();
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: STAFF_REPORT_SPREADSHEET_ID,
+    range: `${STAFF_REPORT_SHEET_NAME}!A:R`,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: [row] },
+  });
+}
+
+async function maybeProcessStaffReport(event, session, sourceKey) {
+  const problem = session.problem;
+  const images = session.images || [];
+  if (!problem) return false;
+
+  if (images.length < 2) {
+    await replyMessage(event.replyToken, '收到，請補照片：需要「運單照片 + 問題照片」兩張，廠商理賠才有證明。');
+    return true;
+  }
+
+  const downloaded = [];
+  for (let i = 0; i < images.length; i++) {
+    const img = images[i];
+    const buffer = await downloadLineImageBuffer(img.messageId);
+    const base64 = buffer.toString('base64');
+    const url = await uploadStaffImageToDrive(buffer, `${Date.now()}_${sourceKey.replace(/[^\w-]/g, '_')}_${i + 1}.jpg`);
+    downloaded.push({ ...img, buffer, base64, url });
+  }
+
+  const ocrTexts = [];
+  for (const img of downloaded) {
+    ocrTexts.push(await ocrStaffImage(img.base64));
+  }
+  const trackingNo = extractTrackingNoFromOcr(ocrTexts.join('\n'));
+  const displayName = await getLineDisplayName(event.source);
+
+  if (!trackingNo) {
+    await appendStaffReport([
+      new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }),
+      displayName,
+      sourceKey,
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      problem.type,
+      problem.qty,
+      problem.raw || '',
+      downloaded[0]?.url || '',
+      downloaded.slice(1).map((i) => i.url).filter(Boolean).join('\n'),
+      '需重拍運單',
+      'OCR 無法辨識運單號',
+      '',
+      '',
+    ]);
+    await replyMessage(event.replyToken, '看不清楚運單號，請重拍運單標籤。運單號和條碼附近文字要清楚入鏡。');
+    await clearStaffReportSession(sourceKey);
+    return true;
+  }
+
+  const order = await findOrderByTrackingNo(trackingNo);
+  await appendStaffReport([
+    new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }),
+    displayName,
+    sourceKey,
+    trackingNo,
+    order.orderNo || '',
+    order.productId || '',
+    order.productName || '',
+    order.qty || '',
+    order.usage || '',
+    problem.type,
+    problem.qty,
+    problem.raw || '',
+    downloaded[0]?.url || '',
+    downloaded.slice(1).map((i) => i.url).filter(Boolean).join('\n'),
+    order.found ? '未處理' : '找不到運單',
+    order.found ? '' : '所有訂單找不到這個運單號',
+    order.rowNumber || '',
+    order.offerId || '',
+  ]);
+
+  const reply = order.found
+    ? `已建立回報\n運單號：${trackingNo}\n商品：${order.productName || '(未帶出)'}\n問題：${problem.type} ${problem.qty}`
+    : `已建立回報，但找不到運單號\n運單號：${trackingNo}\n請主管稍後確認。`;
+  await replyMessage(event.replyToken, reply);
+  await clearStaffReportSession(sourceKey);
+  return true;
+}
+
+async function handleStaffReportEvent(event) {
+  if (!staffReportEnabled()) return false;
+  if (!staffReportSourceAllowed(event.source)) return false;
+
+  const sourceKey = getStaffSourceKey(event.source);
+  const session = await loadStaffReportSession(sourceKey);
+  session.images = session.images || [];
+
+  if (event.message.type === 'text') {
+    const text = (event.message.text || '').trim();
+    const groupTextStartedWithoutKeyword = (event.source.type === 'group' || event.source.type === 'room')
+      && session.images.length === 0
+      && !/^回報\b/.test(text);
+    if (groupTextStartedWithoutKeyword) return false;
+    if (!looksLikeStaffReportText(text) && session.images.length === 0) return false;
+
+    const problem = parseStaffProblemText(text);
+    if (!problem) {
+      await replyMessage(event.replyToken, '請輸入問題和數量，例如：少3、破2、錯1。');
+      return true;
+    }
+    session.problem = problem;
+    session.text = text;
+    await saveStaffReportSession(sourceKey, session);
+    return maybeProcessStaffReport(event, session, sourceKey);
+  }
+
+  if (event.message.type === 'image') {
+    session.images.push({ messageId: event.message.id, createdAt: new Date().toISOString() });
+    if (session.images.length > 4) session.images = session.images.slice(-4);
+    await saveStaffReportSession(sourceKey, session);
+
+    if (!session.problem) {
+      await replyMessage(event.replyToken, '收到照片，請再輸入問題和數量，例如：少3、破2、錯1。');
+      return true;
+    }
+    return maybeProcessStaffReport(event, session, sourceKey);
+  }
+
+  return false;
+}
+
 // --- 處理 tool use 結果 ---
 async function handleToolUse(block, userMessage) {
   if (block.name === 'save_todo' && block.input.task) {
@@ -1171,6 +1530,8 @@ async function saveOwnerLineId(userId) {
 async function handleGroupMessage(event) {
   const msgType = event.message.type;
 
+  if (await handleStaffReportEvent(event)) return;
+
   if (msgType === 'text') {
     const text = event.message.text;
     if (!text) return;
@@ -1210,6 +1571,8 @@ async function handleDirectMessage(event) {
 
   // 儲存 owner LINE ID（首次私訊時 upsert）
   saveOwnerLineId(userId).catch((err) => console.error('saveOwnerLineId error:', err));
+
+  if (await handleStaffReportEvent(event)) return;
 
   if (msgType === 'image') {
     try {
