@@ -709,11 +709,15 @@ function parseStaffProblemText(text) {
 }
 
 function looksLikeStaffReportText(text) {
-  return Boolean(parseStaffProblemText(text)) || /^#\s*回報(?:\s|$|[:：,，])/.test(String(text || '').trim());
+  return Boolean(parseStaffProblemText(text)) || isStaffReportTrigger(text);
 }
 
 function extractTrackingNoFromText(text) {
   return extractTrackingNoFromOcr(text);
+}
+
+function isStaffReportTrigger(text) {
+  return /^[#＃]\s*回報(?:\s|$|[:：,，])/.test(String(text || '').trim());
 }
 
 async function loadStaffReportSession(sourceKey) {
@@ -974,7 +978,15 @@ async function maybeProcessStaffReport(event, session, sourceKey) {
 
 async function handleStaffReportEvent(event) {
   const incomingText = event.message.type === 'text' ? (event.message.text || '').trim() : '';
-  const isStaffTrigger = /^#\s*回報(?:\s|$|[:：,，])/.test(incomingText);
+  const isStaffTrigger = isStaffReportTrigger(incomingText);
+  if (isStaffTrigger || event.message.type === 'image') {
+    console.log('staff_report_event', {
+      sourceType: event.source.type,
+      messageType: event.message.type,
+      text: incomingText,
+      enabled: staffReportEnabled(),
+    });
+  }
   if (!staffReportEnabled()) {
     if (isStaffTrigger) {
       await replyMessage(event.replyToken, '員工回報功能還沒啟用：請檢查 GOOGLE_VISION_API_KEY 和 STAFF_REPORT_SPREADSHEET_ID。');
@@ -991,7 +1003,7 @@ async function handleStaffReportEvent(event) {
 
   if (event.message.type === 'text') {
     const text = (event.message.text || '').trim();
-    const groupTextWithoutKeyword = isGroup && !/^#\s*回報(?:\s|$|[:：,，])/.test(text);
+    const groupTextWithoutKeyword = isGroup && !isStaffReportTrigger(text);
     if (groupTextWithoutKeyword) return false;
     if (!looksLikeStaffReportText(text) && session.images.length === 0) return false;
 
