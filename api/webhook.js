@@ -682,7 +682,7 @@ function getStaffSourceKey(source) {
 
 function parseStaffProblemText(text) {
   const s = String(text || '')
-    .replace(/回報/g, '')
+    .replace(/#回報|回報/g, '')
     .replace(/\s+/g, '')
     .replace(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xFEE0));
   const patterns = [
@@ -709,7 +709,7 @@ function parseStaffProblemText(text) {
 }
 
 function looksLikeStaffReportText(text) {
-  return Boolean(parseStaffProblemText(text)) || /^回報\b/.test(String(text || '').trim());
+  return Boolean(parseStaffProblemText(text)) || /^#回報(?:\s|$|[:：,，])/.test(String(text || '').trim());
 }
 
 function extractTrackingNoFromText(text) {
@@ -983,7 +983,7 @@ async function handleStaffReportEvent(event) {
 
   if (event.message.type === 'text') {
     const text = (event.message.text || '').trim();
-    const groupTextWithoutKeyword = isGroup && !/^回報\b/.test(text);
+    const groupTextWithoutKeyword = isGroup && !/^#回報(?:\s|$|[:：,，])/.test(text);
     if (groupTextWithoutKeyword) return false;
     if (!looksLikeStaffReportText(text) && session.images.length === 0) return false;
 
