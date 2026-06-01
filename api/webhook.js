@@ -979,13 +979,12 @@ async function handleStaffReportEvent(event) {
   const sourceKey = getStaffSourceKey(event.source);
   const session = await loadStaffReportSession(sourceKey);
   session.images = session.images || [];
+  const isGroup = event.source.type === 'group' || event.source.type === 'room';
 
   if (event.message.type === 'text') {
     const text = (event.message.text || '').trim();
-    const groupTextStartedWithoutKeyword = (event.source.type === 'group' || event.source.type === 'room')
-      && session.images.length === 0
-      && !/^回報\b/.test(text);
-    if (groupTextStartedWithoutKeyword) return false;
+    const groupTextWithoutKeyword = isGroup && !/^回報\b/.test(text);
+    if (groupTextWithoutKeyword) return false;
     if (!looksLikeStaffReportText(text) && session.images.length === 0) return false;
 
     const manualTrackingNo = extractTrackingNoFromText(text);
@@ -1010,6 +1009,8 @@ async function handleStaffReportEvent(event) {
   }
 
   if (event.message.type === 'image') {
+    if (isGroup && !session.problem) return false;
+
     session.images.push({ messageId: event.message.id, createdAt: new Date().toISOString() });
     if (session.images.length > 4) session.images = session.images.slice(-4);
     await saveStaffReportSession(sourceKey, session);
