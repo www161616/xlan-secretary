@@ -305,7 +305,8 @@ account 判斷同記帳規則。
 【完成與延後】
 當用戶說「完成」「辦完了」「OK了」「處理好了」，如果有提到待辦關鍵字，例如「龍潭付款完成」「菜單好了」「廠商回覆了」，呼叫 complete_todo。
 如果只說「完成」但沒有目標，不要假裝完成，要回覆「是哪一件完成？可以回：完成第1項，或說完成的事項關鍵字。」
-當用戶說「延後」「改到X點」「明天再做」，幫忙更新對應行程。
+當用戶說「延後」「明天再做」「下週再處理」，如果有提到待辦關鍵字，呼叫 postpone_todo。
+當用戶說「不用做」「取消」「刪掉」「不用管了」，如果有提到待辦關鍵字，呼叫 delete_todo。
 
 【Bug 追蹤】
 群組或私訊中出現「壞了」「不能用」「出錯」「bug」「error」「異常」，
@@ -368,6 +369,31 @@ const COMPLETE_TODO_TOOL = {
       keyword: { type: 'string', description: '用來搜尋待辦的關鍵字，例如「龍潭付款」「菜單」「廠商」；如果完全沒有目標就填空字串' },
     },
     required: ['keyword'],
+  },
+};
+
+const DELETE_TODO_TOOL = {
+  name: 'delete_todo',
+  description: '刪除或取消待辦事項。當用戶說某件事不用做了、取消、刪掉、不用管了時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      keyword: { type: 'string', description: '用來搜尋待辦的關鍵字，例如「龍潭付款」「菜單」「廠商」；如果完全沒有目標就填空字串' },
+    },
+    required: ['keyword'],
+  },
+};
+
+const POSTPONE_TODO_TOOL = {
+  name: 'postpone_todo',
+  description: '延後待辦事項。當用戶說某件事明天做、下週做、延後到某日期時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      keyword: { type: 'string', description: '用來搜尋待辦的關鍵字，例如「龍潭付款」「菜單」「廠商」；如果完全沒有目標就填空字串' },
+      due_text: { type: 'string', description: '用戶說的延後時間，例如「明天」「下週一」「6/5」「2026-06-05」' },
+    },
+    required: ['keyword', 'due_text'],
   },
 };
 
@@ -621,7 +647,7 @@ const GET_PENDING_PAYABLES_TOOL = {
   input_schema: { type: 'object', properties: {} },
 };
 
-const ALL_TOOLS = [SAVE_TODO_TOOL, COMPLETE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL, SAVE_VENDOR_TOOL, GET_VENDOR_TOOL, CREATE_PROJECT_TOOL, GET_PROJECT_STATUS_TOOL, GET_PENDING_BUGS_TOOL, GET_PENDING_PAYABLES_TOOL];
+const ALL_TOOLS = [SAVE_TODO_TOOL, COMPLETE_TODO_TOOL, DELETE_TODO_TOOL, POSTPONE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL, SAVE_VENDOR_TOOL, GET_VENDOR_TOOL, CREATE_PROJECT_TOOL, GET_PROJECT_STATUS_TOOL, GET_PENDING_BUGS_TOOL, GET_PENDING_PAYABLES_TOOL];
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -1126,6 +1152,141 @@ function scoreTodoMatch(keyword, text) {
   return score;
 }
 
+function getTaipeiDate() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Taipei' }));
+}
+
+function formatDateYmd(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function parseTodoDueDate(text) {
+  const raw = String(text || '').trim();
+  const now = getTaipeiDate();
+  const date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (!raw) return '';
+
+  const iso = raw.match(/(20\d{2})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (iso) return `${iso[1]}-${String(iso[2]).padStart(2, '0')}-${String(iso[3]).padStart(2, '0')}`;
+
+  const md = raw.match(/(\d{1,2})\s*[月/]\s*(\d{1,2})\s*日?/);
+  if (md) {
+    let y = now.getFullYear();
+    const m = Number(md[1]);
+    const d = Number(md[2]);
+    const candidate = new Date(y, m - 1, d);
+    if (candidate < date) y += 1;
+    return formatDateYmd(new Date(y, m - 1, d));
+  }
+
+  if (/今天/.test(raw)) return formatDateYmd(date);
+  if (/明天/.test(raw)) {
+    date.setDate(date.getDate() + 1);
+    return formatDateYmd(date);
+  }
+  if (/後天/.test(raw)) {
+    date.setDate(date.getDate() + 2);
+    return formatDateYmd(date);
+  }
+
+  const weekMatch = raw.match(/下?週([一二三四五六日天])/);
+  if (weekMatch) {
+    const targetMap = { 日: 0, 天: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6 };
+    const target = targetMap[weekMatch[1]];
+    let diff = target - date.getDay();
+    if (diff <= 0 || raw.includes('下週')) diff += 7;
+    date.setDate(date.getDate() + diff);
+    return formatDateYmd(date);
+  }
+
+  return raw;
+}
+
+function stripTodoSchedulePrefix(text) {
+  return String(text || '').replace(/^\[延後到 [^\]]+\]\s*/, '');
+}
+
+function withTodoSchedulePrefix(text, dueDate) {
+  return `[延後到 ${dueDate}] ${stripTodoSchedulePrefix(text)}`;
+}
+
+async function getPendingTodos(limit = 100) {
+  const { data } = await supabase
+    .from('xlan_todos')
+    .select('*')
+    .eq('done', false)
+    .order('created_at', { ascending: true })
+    .limit(limit);
+  return data || [];
+}
+
+function rankTodoCandidates(todos, keyword) {
+  const normalizedKeyword = normalizeTodoText(keyword);
+  return (todos || [])
+    .map((todo) => ({
+      todo,
+      score: scoreTodoMatch(normalizedKeyword, normalizeTodoText(`${todo.text || ''} ${todo.source_message || ''} ${todo.project_name || ''}`)),
+    }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+}
+
+function ambiguousTodoReply(candidates, actionLabel) {
+  const options = candidates.slice(0, 5).map((item, i) => `${i + 1}. ${item.todo.text}`).join('\n');
+  return `找到幾個可能的待辦，請回「${actionLabel}第N項」：\n${options}`;
+}
+
+async function completeTodoByKeyword(keyword) {
+  const todos = await getPendingTodos();
+  const candidates = rankTodoCandidates(todos, keyword);
+  if (candidates.length === 0) {
+    return `找不到包含「${keyword}」的未完成待辦。你可以回「待辦」看清單。`;
+  }
+  const best = candidates[0];
+  if (candidates.length > 1 && best.score === candidates[1].score && best.score < 8) {
+    return ambiguousTodoReply(candidates, '完成');
+  }
+  await supabase
+    .from('xlan_todos')
+    .update({ done: true, done_at: new Date().toISOString() })
+    .eq('id', best.todo.id);
+  return `✅ 已完成：「${best.todo.text}」`;
+}
+
+async function deleteTodoByKeyword(keyword) {
+  const todos = await getPendingTodos();
+  const candidates = rankTodoCandidates(todos, keyword);
+  if (candidates.length === 0) {
+    return `找不到包含「${keyword}」的未完成待辦。你可以回「待辦」看清單。`;
+  }
+  const best = candidates[0];
+  if (candidates.length > 1 && best.score === candidates[1].score && best.score < 8) {
+    return ambiguousTodoReply(candidates, '刪除');
+  }
+  await supabase.from('xlan_todos').delete().eq('id', best.todo.id);
+  return `🗑️ 已刪除：「${best.todo.text}」`;
+}
+
+async function postponeTodoByKeyword(keyword, dueText) {
+  const dueDate = parseTodoDueDate(dueText);
+  if (!dueDate) return '要延後到什麼時候？例如：延後到明天、延後到6/5。';
+  const todos = await getPendingTodos();
+  const candidates = rankTodoCandidates(todos, keyword);
+  if (candidates.length === 0) {
+    return `找不到包含「${keyword}」的未完成待辦。你可以回「待辦」看清單。`;
+  }
+  const best = candidates[0];
+  if (candidates.length > 1 && best.score === candidates[1].score && best.score < 8) {
+    return ambiguousTodoReply(candidates, '延後');
+  }
+  const nextText = withTodoSchedulePrefix(best.todo.text, dueDate);
+  await supabase.from('xlan_todos').update({ text: nextText }).eq('id', best.todo.id);
+  return `⏳ 已延後到 ${dueDate}：「${stripTodoSchedulePrefix(best.todo.text)}」`;
+}
+
 // --- 處理 tool use 結果 ---
 async function handleToolUse(block, userMessage) {
   if (block.name === 'save_todo' && block.input.task) {
@@ -1143,53 +1304,40 @@ async function handleToolUse(block, userMessage) {
     try {
       const keyword = String(block.input.keyword || '').trim();
       if (!keyword) {
-        const { data: todos } = await supabase
-          .from('xlan_todos')
-          .select('*')
-          .eq('done', false)
-          .order('created_at', { ascending: true })
-          .limit(5);
-        const list = (todos || []).map((t, i) => `${i + 1}. ${t.text}`).join('\n');
+        const todos = await getPendingTodos(5);
+        const list = todos.map((t, i) => `${i + 1}. ${t.text}`).join('\n');
         return {
           result: `是哪一件完成？可以回「完成第1項」，或說完成的事項關鍵字。\n${list || '目前沒有未完成待辦。'}`,
           flexMessage: null,
         };
       }
-
-      const { data: todos } = await supabase
-        .from('xlan_todos')
-        .select('*')
-        .eq('done', false)
-        .order('created_at', { ascending: true })
-        .limit(100);
-
-      const normalizedKeyword = normalizeTodoText(keyword);
-      const candidates = (todos || [])
-        .map((todo) => ({
-          todo,
-          score: scoreTodoMatch(normalizedKeyword, normalizeTodoText(`${todo.text || ''} ${todo.source_message || ''} ${todo.project_name || ''}`)),
-        }))
-        .filter((item) => item.score > 0)
-        .sort((a, b) => b.score - a.score);
-
-      if (candidates.length === 0) {
-        return { result: `找不到包含「${keyword}」的未完成待辦。你可以回「待辦」看清單。`, flexMessage: null };
-      }
-
-      const best = candidates[0];
-      if (candidates.length > 1 && best.score === candidates[1].score && best.score < 8) {
-        const options = candidates.slice(0, 5).map((item, i) => `${i + 1}. ${item.todo.text}`).join('\n');
-        return { result: `找到幾個可能的待辦，請回「完成第N項」：\n${options}`, flexMessage: null };
-      }
-
-      await supabase
-        .from('xlan_todos')
-        .update({ done: true, done_at: new Date().toISOString() })
-        .eq('id', best.todo.id);
-      return { result: `✅ 已完成：「${best.todo.text}」`, flexMessage: null };
+      return { result: await completeTodoByKeyword(keyword), flexMessage: null };
     } catch (err) {
       console.error('Complete todo error:', err.message);
       return { result: `標記完成失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'delete_todo') {
+    try {
+      const keyword = String(block.input.keyword || '').trim();
+      if (!keyword) return { result: '要刪除哪一件？可以回「刪除第1項」，或說「龍潭付款不用做了」。', flexMessage: null };
+      return { result: await deleteTodoByKeyword(keyword), flexMessage: null };
+    } catch (err) {
+      console.error('Delete todo error:', err.message);
+      return { result: `刪除失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'postpone_todo') {
+    try {
+      const keyword = String(block.input.keyword || '').trim();
+      const dueText = String(block.input.due_text || '').trim();
+      if (!keyword) return { result: '要延後哪一件？可以回「延後第1項到明天」，或說「龍潭付款明天再做」。', flexMessage: null };
+      return { result: await postponeTodoByKeyword(keyword, dueText), flexMessage: null };
+    } catch (err) {
+      console.error('Postpone todo error:', err.message);
+      return { result: `延後失敗：${err.message}`, isError: true, flexMessage: null };
     }
   }
 
@@ -1670,7 +1818,7 @@ async function listTodos() {
     })
     .join('\n');
 
-  return `📋 你的待辦清單\n\n${items}\n\n共 ${data.length} 項未完成。\n回覆「完成第1項」可以標記完成。`;
+  return `📋 你的待辦清單\n\n${items}\n\n共 ${data.length} 項未完成。\n可回：完成第1項、延後第1項到明天、刪除第1項。`;
 }
 
 // --- 標記待辦完成 ---
@@ -1692,6 +1840,41 @@ async function completeTodo(n) {
     .eq('id', todo.id);
 
   return `✅ 已完成：「${todo.text}」`;
+}
+
+async function deleteTodo(n) {
+  const { data } = await supabase
+    .from('xlan_todos')
+    .select('*')
+    .eq('done', false)
+    .order('created_at', { ascending: true });
+
+  if (!data || n < 1 || n > data.length) {
+    return `找不到第 ${n} 項待辦，目前共 ${(data || []).length} 項未完成。`;
+  }
+
+  const todo = data[n - 1];
+  await supabase.from('xlan_todos').delete().eq('id', todo.id);
+  return `🗑️ 已刪除：「${todo.text}」`;
+}
+
+async function postponeTodo(n, dueText) {
+  const { data } = await supabase
+    .from('xlan_todos')
+    .select('*')
+    .eq('done', false)
+    .order('created_at', { ascending: true });
+
+  if (!data || n < 1 || n > data.length) {
+    return `找不到第 ${n} 項待辦，目前共 ${(data || []).length} 項未完成。`;
+  }
+
+  const dueDate = parseTodoDueDate(dueText);
+  if (!dueDate) return '要延後到什麼時候？例如：延後第1項到明天、延後第1項到6/5。';
+
+  const todo = data[n - 1];
+  await supabase.from('xlan_todos').update({ text: withTodoSchedulePrefix(todo.text, dueDate) }).eq('id', todo.id);
+  return `⏳ 已延後到 ${dueDate}：「${stripTodoSchedulePrefix(todo.text)}」`;
 }
 
 // --- 檢查訊息是否有 @ 小瀾 ---
@@ -1811,10 +1994,22 @@ async function handleDirectMessage(event) {
 
   if (/^(待辦|清單|有什麼事)$/.test(text)) {
     replyMessages = [{ type: 'text', text: await listTodos() }];
-  } else if (/^(完成|刪除)第(\d+)項$/.test(text)) {
-    const match = text.match(/^(完成|刪除)第(\d+)項$/);
-    const n = parseInt(match[2], 10);
+  } else if (/^完成第(\d+)項$/.test(text)) {
+    const match = text.match(/^完成第(\d+)項$/);
+    const n = parseInt(match[1], 10);
     replyMessages = [{ type: 'text', text: await completeTodo(n) }];
+  } else if (/^刪除第(\d+)項$/.test(text)) {
+    const match = text.match(/^刪除第(\d+)項$/);
+    const n = parseInt(match[1], 10);
+    replyMessages = [{ type: 'text', text: await deleteTodo(n) }];
+  } else if (/^延後第(\d+)項到(.+)$/.test(text)) {
+    const match = text.match(/^延後第(\d+)項到(.+)$/);
+    const n = parseInt(match[1], 10);
+    replyMessages = [{ type: 'text', text: await postponeTodo(n, match[2]) }];
+  } else if (/^第(\d+)項延後到(.+)$/.test(text)) {
+    const match = text.match(/^第(\d+)項延後到(.+)$/);
+    const n = parseInt(match[1], 10);
+    replyMessages = [{ type: 'text', text: await postponeTodo(n, match[2]) }];
   } else {
     const { reply, flexMessages } = await chatWithClaude(userId, text);
     replyMessages = [];
