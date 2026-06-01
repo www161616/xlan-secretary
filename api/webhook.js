@@ -691,15 +691,29 @@ function parseStaffProblemText(text) {
     { type: '錯貨', re: /(錯貨|錯)(\d+)/ },
     { type: '多貨', re: /(多貨|多)(\d+)/ },
   ];
+  const found = [];
   for (const p of patterns) {
-    const m = s.match(p.re);
-    if (m) return { type: p.type, qty: Number(m[2]) || 1, raw: text };
+    const matches = [...s.matchAll(new RegExp(p.re.source, 'g'))];
+    const qty = matches.reduce((sum, m) => sum + (Number(m[2]) || 1), 0);
+    if (qty > 0) found.push({ type: p.type, qty });
+  }
+  if (found.length === 1) return { type: found[0].type, qty: found[0].qty, raw: text };
+  if (found.length > 1) {
+    return {
+      type: found.map((item) => item.type).join('+'),
+      qty: found.reduce((sum, item) => sum + item.qty, 0),
+      raw: text,
+    };
   }
   return null;
 }
 
 function looksLikeStaffReportText(text) {
   return Boolean(parseStaffProblemText(text)) || /^回報\b/.test(String(text || '').trim());
+}
+
+function extractTrackingNoFromText(text) {
+  return extractTrackingNoFromOcr(text);
 }
 
 async function loadStaffReportSession(sourceKey) {
@@ -881,8 +895,8 @@ async function maybeProcessStaffReport(event, session, sourceKey) {
   const images = session.images || [];
   if (!problem) return false;
 
-  if (images.length < 2) {
-    await replyMessage(event.replyToken, '收到，請補照片：需要「運單照片 + 問題照片」兩張，廠商理賠才有證明。');
+  if (images.length < 1) {
+    await replyMessage(event.replyToken, '收到，請補一張照片：運單標籤和問題證據要拍清楚。');
     return true;
   }
 
@@ -899,7 +913,7 @@ async function maybeProcessStaffReport(event, session, sourceKey) {
   for (const img of downloaded) {
     ocrTexts.push(await ocrStaffImage(img.base64));
   }
-  const trackingNo = extractTrackingNoFromOcr(ocrTexts.join('\n'));
+  const trackingNo = session.manualTrackingNo || extractTrackingNoFromOcr(ocrTexts.join('\n'));
   const displayName = await getLineDisplayName(event.source);
 
   if (!trackingNo) {
@@ -917,7 +931,7 @@ async function maybeProcessStaffReport(event, session, sourceKey) {
       problem.qty,
       problem.raw || '',
       downloaded[0]?.url || '',
-      downloaded.slice(1).map((i) => i.url).filter(Boolean).join('\n'),
+      (downloaded.slice(1).map((i) => i.url).filter(Boolean).join('\n') || downloaded[0]?.url || ''),
       '需重拍運單',
       'OCR 無法辨識運單號',
       '',
@@ -974,9 +988,19 @@ async function handleStaffReportEvent(event) {
     if (groupTextStartedWithoutKeyword) return false;
     if (!looksLikeStaffReportText(text) && session.images.length === 0) return false;
 
+    const manualTrackingNo = extractTrackingNoFromText(text);
+    if (manualTrackingNo) {
+      session.manualTrackingNo = manualTrackingNo;
+    }
+
     const problem = parseStaffProblemText(text);
     if (!problem) {
-      await replyMessage(event.replyToken, '請輸入問題和數量，例如：少3、破2、錯1。');
+      await saveStaffReportSession(sourceKey, session);
+      if (manualTrackingNo) {
+        await replyMessage(event.replyToken, '收到運單號，請再輸入問題和數量，例如：少3、破2、錯1。');
+      } else {
+        await replyMessage(event.replyToken, '請輸入問題和數量，例如：少3、破2、錯1。');
+      }
       return true;
     }
     session.problem = problem;
