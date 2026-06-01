@@ -826,6 +826,54 @@ function scoreTrackingCandidate(value) {
   return score;
 }
 
+function staffTrackingDistance(a, b) {
+  const left = cleanStaffKey(a);
+  const right = cleanStaffKey(b);
+  if (!left || !right) return Infinity;
+  if (left === right) return 0;
+  if (Math.abs(left.length - right.length) > 1) return Infinity;
+
+  const dp = Array.from({ length: left.length + 1 }, () => Array(right.length + 1).fill(0));
+  for (let i = 0; i <= left.length; i++) dp[i][0] = i;
+  for (let j = 0; j <= right.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= left.length; i++) {
+    for (let j = 1; j <= right.length; j++) {
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost,
+      );
+    }
+  }
+  return dp[left.length][right.length];
+}
+
+function isLikelyStaffTrackingMatch(target, candidate) {
+  const left = cleanStaffKey(target);
+  const right = cleanStaffKey(candidate);
+  if (!left || !right) return false;
+  if (left.length < 9 || right.length < 9) return false;
+  return staffTrackingDistance(left, right) <= 1;
+}
+
+function staffOrderFromRow(row, rowNumber, trackingNo, rawTrackingNo, suspected = false) {
+  return {
+    found: true,
+    suspected,
+    rowNumber,
+    orderNo: row[2] || '',
+    trackingNo,
+    rawTrackingNo: rawTrackingNo || '',
+    productId: row[14] || '',
+    productName: row[15] || row[4] || '',
+    qty: row[6] || '',
+    usage: row[13] || '',
+    destination: row[12] || '',
+    offerId: row[19] || '',
+  };
+}
+
 async function findOrderByTrackingNo(trackingNo) {
   const sheets = getSheetsClient();
   const range = `${STAFF_REPORT_ORDER_SHEET_NAME}!A:T`;
@@ -835,23 +883,23 @@ async function findOrderByTrackingNo(trackingNo) {
   });
   const rows = res.data.values || [];
   const target = cleanStaffKey(trackingNo);
+  let nearest = null;
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i] || [];
     const tracks = splitStaffKeys(row[3] || ''); // D 運單號碼
-    if (!tracks.includes(target)) continue;
-    return {
-      found: true,
-      rowNumber: i + 1,
-      orderNo: row[2] || '',
-      trackingNo: target,
-      rawTrackingNo: row[3] || '',
-      productId: row[14] || '',
-      productName: row[15] || row[4] || '',
-      qty: row[6] || '',
-      usage: row[13] || '',
-      destination: row[12] || '',
-      offerId: row[19] || '',
-    };
+    if (tracks.includes(target)) {
+      return staffOrderFromRow(row, i + 1, target, row[3] || '');
+    }
+    for (const track of tracks) {
+      if (!isLikelyStaffTrackingMatch(target, track)) continue;
+      const distance = staffTrackingDistance(target, track);
+      if (!nearest || distance < nearest.distance) {
+        nearest = { row, rowNumber: i + 1, track, distance };
+      }
+    }
+  }
+  if (nearest) {
+    return staffOrderFromRow(nearest.row, nearest.rowNumber, nearest.track, nearest.row[3] || '', true);
   }
   return { found: false };
 }
@@ -962,15 +1010,17 @@ async function maybeProcessStaffReport(event, session, sourceKey) {
     problem.raw || '',
     downloaded[0]?.url || '',
     downloaded.slice(1).map((i) => i.url).filter(Boolean).join('\n'),
-    order.found ? '未處理' : '找不到運單',
-    order.found ? '' : '所有訂單找不到這個運單號',
+    order.found ? (order.suspected ? '疑似運單' : '未處理') : '找不到運單',
+    order.found
+      ? (order.suspected ? `OCR辨識為 ${trackingNo}，系統疑似比對到 ${order.trackingNo}` : '')
+      : '所有訂單找不到這個運單號',
     order.rowNumber || '',
     order.offerId || '',
   ]);
 
   const reply = order.found
-    ? `已建立回報\n運單號：${trackingNo}\n商品：${order.productName || '(未帶出)'}\n問題：${problem.type} ${problem.qty}`
-    : `已建立回報，但找不到運單號\n運單號：${trackingNo}\n請主管稍後確認。`;
+    ? `已建立回報\n運單號：${order.trackingNo || trackingNo}${order.suspected ? `\nOCR讀到：${trackingNo}` : ''}\n商品：${order.productName || '(未帶出)'}\n問題：${problem.type} ${problem.qty}`
+    : `已建立回報，但找不到運單號\n運單號：${trackingNo}\n小瀾稍後確認。`;
   await replyMessage(event.replyToken, reply);
   await clearStaffReportSession(sourceKey);
   return true;
