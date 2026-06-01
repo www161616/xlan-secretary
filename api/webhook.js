@@ -973,7 +973,15 @@ async function maybeProcessStaffReport(event, session, sourceKey) {
 }
 
 async function handleStaffReportEvent(event) {
-  if (!staffReportEnabled()) return false;
+  const incomingText = event.message.type === 'text' ? (event.message.text || '').trim() : '';
+  const isStaffTrigger = /^#\s*回報(?:\s|$|[:：,，])/.test(incomingText);
+  if (!staffReportEnabled()) {
+    if (isStaffTrigger) {
+      await replyMessage(event.replyToken, '員工回報功能還沒啟用：請檢查 GOOGLE_VISION_API_KEY 和 STAFF_REPORT_SPREADSHEET_ID。');
+      return true;
+    }
+    return false;
+  }
   if (!staffReportSourceAllowed(event.source)) return false;
 
   const sourceKey = getStaffSourceKey(event.source);
@@ -1714,6 +1722,11 @@ module.exports = async (req, res) => {
       }
     } catch (err) {
       console.error('Event handling error:', err);
+      try {
+        await replyMessage(event.replyToken, `系統錯誤：${err.message || err}`);
+      } catch (replyErr) {
+        console.error('Error reply failed:', replyErr);
+      }
     }
   }
 
