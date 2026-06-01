@@ -1884,6 +1884,10 @@ function isMentioned(event) {
   return mention.mentionees.some((m) => m.type === 'all' || m.isSelf === true);
 }
 
+function stripGroupCommand(text, command) {
+  return String(text || '').replace(new RegExp(`^[#＃]\\s*${command}\\s*`, 'i'), '').trim();
+}
+
 // --- 儲存 owner LINE ID ---
 async function saveOwnerLineId(userId) {
   await supabase.from('xlan_kv').upsert({ key: 'owner_line_id', value: userId });
@@ -1900,10 +1904,11 @@ async function handleGroupMessage(event) {
     if (!text) return;
 
     const mentioned = isMentioned(event);
+    const isTodoCommand = /^[#＃]\s*待辦/.test(text);
 
-    if (mentioned) {
+    if (mentioned || isTodoCommand) {
       const quotedText = event.message.quotedMessage && event.message.quotedMessage.text;
-      const contentToAnalyze = quotedText || text;
+      const contentToAnalyze = quotedText || (isTodoCommand ? stripGroupCommand(text, '待辦') : text);
       const cleanedText = contentToAnalyze.replace(/@\S+/g, '').trim();
       if (!cleanedText) return;
 
@@ -1913,16 +1918,6 @@ async function handleGroupMessage(event) {
       if (flexMessages.length > 0) messages.push(...flexMessages);
       if (reply) messages.push({ type: 'text', text: reply });
       await replyMessage(event.replyToken, messages);
-    } else {
-      const result = await judgeTask(text);
-      if (result.is_task && result.task) {
-        await supabase.from('xlan_todos').insert({
-          text: result.task,
-          source_group: event.source.groupId || 'unknown',
-          source_message: text,
-        });
-        console.log('New task detected:', result.task);
-      }
     }
   }
 }
