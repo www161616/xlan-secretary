@@ -1780,6 +1780,13 @@ module.exports = async (req, res) => {
         roomId: event.source?.roomId,
         userId: event.source?.userId,
       });
+      if (event.type === 'join' && event.replyToken) {
+        try {
+          await replyMessage(event.replyToken, '小瀾已進群。員工回報請輸入 #回報，再附上運單照片和問題數量。');
+        } catch (err) {
+          console.error('Join reply failed:', err);
+        }
+      }
       continue;
     }
     const msgType = event.message.type;
