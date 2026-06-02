@@ -485,6 +485,8 @@ account 判斷：提到廠商名稱、進貨、業務往來、門市費用 = bus
 tags 根據內容自動分類，例如 ["業務","門市"]、["個人"]、["ERP"] 等。
 當用戶說「查筆記」「看筆記」「之前記了什麼」，呼叫 get_notes 列出筆記，不要問用戶問題。
 當用戶問「某某網址是多少」「之前給你的網址」「某某資料在哪」「你有沒有記某某」時，先呼叫 get_notes，用最明確的關鍵字查詢；例如「新系統網址」查「新系統」，「薪資系統網址」查「薪資系統」。
+當用戶說「某某不用記了」「某某刪掉」「不要記某某」，呼叫 delete_note。
+當用戶說「某某改成...」「某某更新成...」「某某網址換成...」，呼叫 update_note。
 如果查到筆記，直接回答筆記內容；不要說「我沒有記到」。
 不要在已完成記錄或查詢後補充不相關提醒、加入群組說明或操作建議。
 
@@ -686,6 +688,32 @@ const SAVE_NOTE_TOOL = {
   },
 };
 
+const UPDATE_NOTE_TOOL = {
+  name: 'update_note',
+  description: '更新既有筆記。當用戶說某個網址、資料、規則、承諾「改成」「更新成」「換成」時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      keyword: { type: 'string', description: '要搜尋舊筆記的關鍵字，例如「新系統」「薪資系統」「林口電話」' },
+      content: { type: 'string', description: '更新後完整筆記內容，繁體中文；如果是網址，必須包含名稱與網址' },
+      tags: { type: 'array', items: { type: 'string' }, description: '標籤，例如 ["網址","ERP"]' },
+    },
+    required: ['keyword', 'content'],
+  },
+};
+
+const DELETE_NOTE_TOOL = {
+  name: 'delete_note',
+  description: '刪除既有筆記。當用戶說某個資料不用記、刪掉、不要記了時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      keyword: { type: 'string', description: '要刪除的筆記關鍵字，例如「新系統」「薪資系統」「林口電話」' },
+    },
+    required: ['keyword'],
+  },
+};
+
 const SAVE_RECURRING_TOOL = {
   name: 'save_recurring',
   description: '儲存定期付款或固定費用提醒。當用戶提到「每個月」「每年」「固定」「定期」付款時使用。',
@@ -866,7 +894,7 @@ const GET_PENDING_PAYABLES_TOOL = {
   input_schema: { type: 'object', properties: {} },
 };
 
-const ALL_TOOLS = [SAVE_TODO_TOOL, COMPLETE_TODO_TOOL, DELETE_TODO_TOOL, POSTPONE_TODO_TOOL, MARK_TODO_STATUS_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL, SAVE_VENDOR_TOOL, GET_VENDOR_TOOL, CREATE_PROJECT_TOOL, GET_PROJECT_STATUS_TOOL, GET_PENDING_BUGS_TOOL, GET_PENDING_PAYABLES_TOOL];
+const ALL_TOOLS = [SAVE_TODO_TOOL, COMPLETE_TODO_TOOL, DELETE_TODO_TOOL, POSTPONE_TODO_TOOL, MARK_TODO_STATUS_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, UPDATE_NOTE_TOOL, DELETE_NOTE_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL, SAVE_VENDOR_TOOL, GET_VENDOR_TOOL, CREATE_PROJECT_TOOL, GET_PROJECT_STATUS_TOOL, GET_PENDING_BUGS_TOOL, GET_PENDING_PAYABLES_TOOL];
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -929,6 +957,18 @@ function cleanMemoryKeyword(text) {
     .join(' ');
 }
 
+function cleanNoteMutationKeyword(text) {
+  return String(text || '')
+    .replace(/https?:\/\/[^\s，。！？、)）]+/ig, '')
+    .replace(/(這是|這個是|幫我|幫|記一下|記起來|記錄|網址|網站|資料|筆記|不用記了|不用記|不要記了|不要記|刪掉|刪除|忘掉|忘記|改成|改為|更新成|更新為|換成|換為|新的|請問|的)/g, ' ')
+    .replace(/[，。！？、,.!?;；:：\s"'「」『』（）()【】\[\]#]/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((part) => part.length >= 2)
+    .slice(0, 4)
+    .join(' ');
+}
+
 async function rememberUrlFromText(text) {
   const url = extractFirstUrl(text);
   if (!url) return null;
@@ -966,6 +1006,77 @@ async function answerUrlFromMemory(text) {
 
   const best = withUrls[0].note;
   return best.content;
+}
+
+async function findNotesByKeyword(keyword, limit = 5) {
+  const words = String(keyword || '').split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+  const noteMap = new Map();
+  for (const word of words) {
+    const { data } = await supabase
+      .from('xlan_notes')
+      .select('*')
+      .ilike('content', `%${word}%`)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    for (const note of data || []) {
+      noteMap.set(note.id, note);
+    }
+  }
+  return Array.from(noteMap.values()).slice(0, limit);
+}
+
+async function updateNoteByKeyword(keyword, content, tags = []) {
+  const notes = await findNotesByKeyword(keyword, 5);
+  if (notes.length === 0) {
+    await supabase.from('xlan_notes').insert({ content, tags });
+    return `找不到舊筆記，已新增：${content.substring(0, 40)}`;
+  }
+  const note = notes[0];
+  const nextTags = tags.length > 0 ? tags : (note.tags || []);
+  const { error } = await supabase
+    .from('xlan_notes')
+    .update({ content, tags: nextTags })
+    .eq('id', note.id);
+  if (error) throw error;
+  return `已更新筆記：${content.substring(0, 40)}`;
+}
+
+async function deleteNoteByKeyword(keyword) {
+  const notes = await findNotesByKeyword(keyword, 5);
+  if (notes.length === 0) {
+    return `找不到包含「${keyword}」的筆記。`;
+  }
+  if (notes.length > 1) {
+    const exact = notes.find((note) => String(note.content || '').includes(keyword));
+    if (!exact) {
+      const options = notes.map((note, i) => `${i + 1}. ${String(note.content || '').slice(0, 40)}`).join('\n');
+      return `找到幾筆可能的筆記，請說清楚一點：\n${options}`;
+    }
+    notes.splice(0, notes.length, exact);
+  }
+  const note = notes[0];
+  const { error } = await supabase.from('xlan_notes').delete().eq('id', note.id);
+  if (error) throw error;
+  return `已刪除筆記：${String(note.content || '').substring(0, 40)}`;
+}
+
+async function updateUrlMemoryFromText(text) {
+  if (!/(改成|改為|更新成|更新為|換成|換為)/.test(text)) return null;
+  const url = extractFirstUrl(text);
+  if (!url) return null;
+  const keyword = cleanNoteMutationKeyword(text) || cleanMemoryKeyword(text);
+  if (!keyword) return null;
+  const content = `${keyword}：${url}`;
+  return updateNoteByKeyword(keyword, content, ['網址']);
+}
+
+async function deleteNoteFromText(text) {
+  if (!/(不用記了|不用記|不要記了|不要記|刪掉|刪除|忘掉|忘記)/.test(text)) return null;
+  if (!/(網址|網站|筆記|資料|電話|系統|承諾|規格|帳號|密碼)/.test(text)) return null;
+  const keyword = cleanNoteMutationKeyword(text);
+  if (!keyword) return null;
+  return deleteNoteByKeyword(keyword);
 }
 
 function keywordPartsFromText(text) {
@@ -1925,6 +2036,29 @@ async function handleToolUse(block, userMessage) {
     }
   }
 
+  if (block.name === 'update_note') {
+    try {
+      const keyword = String(block.input.keyword || '').trim();
+      const content = String(block.input.content || '').trim();
+      if (!keyword || !content) return { result: '要更新哪一則筆記？請補關鍵字和新內容。', flexMessage: null };
+      return { result: await updateNoteByKeyword(keyword, content, block.input.tags || []), flexMessage: null };
+    } catch (err) {
+      console.error('Update note error:', err.message);
+      return { result: `更新筆記失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'delete_note') {
+    try {
+      const keyword = String(block.input.keyword || '').trim();
+      if (!keyword) return { result: '要刪除哪一則筆記？請補關鍵字，例如「新系統網址不用記了」。', flexMessage: null };
+      return { result: await deleteNoteByKeyword(keyword), flexMessage: null };
+    } catch (err) {
+      console.error('Delete note error:', err.message);
+      return { result: `刪除筆記失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
   if (block.name === 'save_recurring') {
     try {
       await supabase.from('xlan_recurring').insert({
@@ -2807,10 +2941,16 @@ async function handleDirectMessage(event) {
   if (!text) return;
 
   let replyMessages;
-  const rememberedUrl = await rememberUrlFromText(text);
-  const memoryUrlAnswer = rememberedUrl ? null : await answerUrlFromMemory(text);
+  const updatedUrlMemory = await updateUrlMemoryFromText(text);
+  const deletedNote = updatedUrlMemory ? null : await deleteNoteFromText(text);
+  const rememberedUrl = (updatedUrlMemory || deletedNote) ? null : await rememberUrlFromText(text);
+  const memoryUrlAnswer = (updatedUrlMemory || deletedNote || rememberedUrl) ? null : await answerUrlFromMemory(text);
 
-  if (rememberedUrl) {
+  if (updatedUrlMemory) {
+    replyMessages = [{ type: 'text', text: updatedUrlMemory }];
+  } else if (deletedNote) {
+    replyMessages = [{ type: 'text', text: deletedNote }];
+  } else if (rememberedUrl) {
     replyMessages = [{ type: 'text', text: rememberedUrl }];
   } else if (memoryUrlAnswer) {
     replyMessages = [{ type: 'text', text: memoryUrlAnswer }];
