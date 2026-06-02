@@ -506,6 +506,14 @@ account 判斷同記帳規則。
 當用戶說「延後」「明天再做」「下週再處理」，如果有提到待辦關鍵字，呼叫 postpone_todo。
 當用戶說「不用做」「取消」「刪掉」「不用管了」，如果有提到待辦關鍵字，呼叫 delete_todo。
 
+【待辦狀態更新】
+當用戶自然描述待辦狀態時，要呼叫 mark_todo_status，不要新增一筆待辦。
+- 「先等」「等老闆」「等廠商」「等回覆」「對方還沒回」→ status 填「等待回覆」
+- 「做到一半」「先做一半」「還沒完全好」「半完成」→ status 填「半完成」
+- 「正在做」「處理中」「已經開始」→ status 填「進行中」
+- 「還沒做」「沒完成」「今天沒做完」→ status 填「未完成」
+keyword 填事情本身的關鍵字，例如「舒肥雞文案先等老闆」填「舒肥雞文案」，「招牌圖做到一半」填「招牌圖」。
+
 【Bug 追蹤】
 群組或私訊中出現「壞了」「不能用」「出錯」「bug」「error」「異常」，
 自動呼叫 save_bug 記錄，回覆「🐛 已記錄 bug：{描述}，我會追蹤這個問題」。
@@ -592,6 +600,19 @@ const POSTPONE_TODO_TOOL = {
       due_text: { type: 'string', description: '用戶說的延後時間，例如「明天」「下週一」「6/5」「2026-06-05」' },
     },
     required: ['keyword', 'due_text'],
+  },
+};
+
+const MARK_TODO_STATUS_TOOL = {
+  name: 'mark_todo_status',
+  description: '用關鍵字更新待辦狀態。當用戶說某件事正在做、做到一半、等待回覆、未完成時使用。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      keyword: { type: 'string', description: '用來搜尋待辦的關鍵字，例如「舒肥雞文案」「招牌圖」「薪資系統」；如果完全沒有目標就填空字串' },
+      status: { type: 'string', enum: ['進行中', '半完成', '等待回覆', '未完成'], description: '要更新的待辦狀態' },
+    },
+    required: ['keyword', 'status'],
   },
 };
 
@@ -845,7 +866,7 @@ const GET_PENDING_PAYABLES_TOOL = {
   input_schema: { type: 'object', properties: {} },
 };
 
-const ALL_TOOLS = [SAVE_TODO_TOOL, COMPLETE_TODO_TOOL, DELETE_TODO_TOOL, POSTPONE_TODO_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL, SAVE_VENDOR_TOOL, GET_VENDOR_TOOL, CREATE_PROJECT_TOOL, GET_PROJECT_STATUS_TOOL, GET_PENDING_BUGS_TOOL, GET_PENDING_PAYABLES_TOOL];
+const ALL_TOOLS = [SAVE_TODO_TOOL, COMPLETE_TODO_TOOL, DELETE_TODO_TOOL, POSTPONE_TODO_TOOL, MARK_TODO_STATUS_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL, SAVE_VENDOR_TOOL, GET_VENDOR_TOOL, CREATE_PROJECT_TOOL, GET_PROJECT_STATUS_TOOL, GET_PENDING_BUGS_TOOL, GET_PENDING_PAYABLES_TOOL];
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -1504,7 +1525,8 @@ function normalizeTodoText(value) {
   return String(value || '')
     .toLowerCase()
     .replace(/[，。！？、,.!?;；:：\s"'「」『』（）()【】\[\]#]/g, '')
-    .replace(/完成|已完成|做好了|好了|ok|OK|處理好了|辦完了|結束了|刪除/g, '');
+    .replace(/完成|已完成|做好了|好了|ok|OK|處理好了|辦完了|結束了|刪除/g, '')
+    .replace(/先等|等老闆|等廠商|等回覆|等待回覆|對方還沒回|做到一半|先做一半|還沒完全好|半完成|正在做|處理中|已經開始|還沒做|沒完成|今天沒做完|延後|明天再做|下週再處理/g, '');
 }
 
 function scoreTodoMatch(keyword, text) {
@@ -1725,6 +1747,25 @@ async function postponeTodoByKeyword(keyword, dueText) {
   return `⏳ 已延後到 ${dueDate}：「${cleanTodoDisplayText(best.todo.text)}」`;
 }
 
+async function markTodoStatusByKeyword(keyword, status) {
+  const allowed = ['進行中', '半完成', '等待回覆', '未完成'];
+  if (!allowed.includes(status)) return '狀態只能是：進行中、半完成、等待回覆、未完成。';
+
+  const todos = await getPendingTodos();
+  const candidates = rankTodoCandidates(todos, keyword);
+  if (candidates.length === 0) {
+    return `找不到包含「${keyword}」的未完成待辦。你可以回「待辦」看清單。`;
+  }
+
+  const best = candidates[0];
+  if (candidates.length > 1 && best.score === candidates[1].score && best.score < 8) {
+    return ambiguousTodoReply(candidates, status);
+  }
+
+  await saveTodoState(best.todo.id, { status });
+  return `${todoStatusIcon(status)} 已標記${status}：「${cleanTodoDisplayText(best.todo.text)}」`;
+}
+
 // --- 處理 tool use 結果 ---
 async function handleToolUse(block, userMessage) {
   if (block.name === 'save_todo' && block.input.task) {
@@ -1776,6 +1817,23 @@ async function handleToolUse(block, userMessage) {
     } catch (err) {
       console.error('Postpone todo error:', err.message);
       return { result: `延後失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'mark_todo_status') {
+    try {
+      const keyword = String(block.input.keyword || '').trim();
+      const status = String(block.input.status || '').trim();
+      if (!keyword) {
+        return {
+          result: '要更新哪一件？可以回「等待第1項」，或說「舒肥雞文案先等老闆」。',
+          flexMessage: null,
+        };
+      }
+      return { result: await markTodoStatusByKeyword(keyword, status), flexMessage: null };
+    } catch (err) {
+      console.error('Mark todo status error:', err.message);
+      return { result: `更新狀態失敗：${err.message}`, isError: true, flexMessage: null };
     }
   }
 
