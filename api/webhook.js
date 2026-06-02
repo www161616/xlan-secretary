@@ -1265,6 +1265,8 @@ function staffReportEnabled() {
   return Boolean(GOOGLE_VISION_API_KEY && STAFF_REPORT_SPREADSHEET_ID);
 }
 
+const STAFF_REPORT_RECENT_IMAGE_MS = 10 * 60 * 1000;
+
 function staffReportSourceAllowed(source) {
   if (!STAFF_REPORT_GROUP_ID) return true;
   return source && source.groupId === STAFF_REPORT_GROUP_ID;
@@ -1284,6 +1286,16 @@ function shouldKeepStaffReportSession(text, session) {
 function getStaffSourceKey(source) {
   if (!source) return 'unknown';
   return ['staff_report', source.type || 'unknown', source.groupId || source.roomId || '', source.userId || ''].join(':');
+}
+
+function pruneStaffReportImages(images) {
+  const now = Date.now();
+  return (images || [])
+    .filter((image) => {
+      const createdAt = new Date(image.createdAt || 0).getTime();
+      return createdAt && now - createdAt <= STAFF_REPORT_RECENT_IMAGE_MS;
+    })
+    .slice(-4);
 }
 
 function parseStaffProblemText(text) {
@@ -1554,7 +1566,7 @@ async function maybeProcessStaffReport(event, session, sourceKey) {
   if (!problem) return false;
 
   if (images.length < 1) {
-    await replyMessage(event.replyToken, '收到，請補一張照片：運單標籤和問題證據要拍清楚。');
+    await replyMessage(event.replyToken, '收到，請附運單照片。運單標籤和問題證據要拍清楚。');
     return true;
   }
 
@@ -1567,36 +1579,24 @@ async function maybeProcessStaffReport(event, session, sourceKey) {
     downloaded.push({ ...img, buffer, base64, url });
   }
 
-  const ocrTexts = [];
-  for (const img of downloaded) {
-    ocrTexts.push(await ocrStaffImage(img.base64));
+  let trackingNo = session.manualTrackingNo || '';
+  if (!trackingNo) {
+    const ocrTexts = [];
+    for (const img of downloaded) {
+      ocrTexts.push(await ocrStaffImage(img.base64));
+    }
+    trackingNo = extractTrackingNoFromOcr(ocrTexts.join('\n'));
   }
-  const trackingNo = session.manualTrackingNo || extractTrackingNoFromOcr(ocrTexts.join('\n'));
   const displayName = await getLineDisplayName(event.source);
 
   if (!trackingNo) {
-    await appendStaffReport([
-      new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }),
-      displayName,
-      sourceKey,
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      problem.type,
-      problem.qty,
-      problem.raw || '',
-      downloaded[0]?.url || '',
-      (downloaded.slice(1).map((i) => i.url).filter(Boolean).join('\n') || downloaded[0]?.url || ''),
-      '需重拍運單',
-      'OCR 無法辨識運單號',
-      '',
-      '',
-    ]);
-    await replyMessage(event.replyToken, '看不清楚運單號，請重拍運單標籤。運單號和條碼附近文字要清楚入鏡。');
-    await clearStaffReportSession(sourceKey);
+    await saveStaffReportSession(sourceKey, {
+      ...session,
+      problem,
+      images,
+      waitingForTrackingNo: true,
+    });
+    await replyMessage(event.replyToken, '看不清楚運單號，請補打運單號。小瀾會用剛剛的照片和問題繼續建立回報。');
     return true;
   }
 
@@ -1654,7 +1654,7 @@ async function handleStaffReportEvent(event) {
 
   const sourceKey = getStaffSourceKey(event.source);
   const session = await loadStaffReportSession(sourceKey);
-  session.images = session.images || [];
+  session.images = pruneStaffReportImages(session.images || []);
   const isGroup = event.source.type === 'group' || event.source.type === 'room';
 
   if (event.message.type === 'text') {
@@ -1664,7 +1664,9 @@ async function handleStaffReportEvent(event) {
       await replyMessage(event.replyToken, '已取消回報。');
       return true;
     }
-    const groupTextWithoutKeyword = isGroup && !isStaffReportTrigger(text);
+    const possibleManualTrackingNo = extractTrackingNoFromText(text);
+    const canContinueWaitingReport = Boolean(session.waitingForTrackingNo && possibleManualTrackingNo);
+    const groupTextWithoutKeyword = isGroup && !isStaffReportTrigger(text) && !canContinueWaitingReport;
     if (groupTextWithoutKeyword) return false;
     if (!isGroup && session.images.length > 0 && !shouldKeepStaffReportSession(text, session)) {
       await clearStaffReportSession(sourceKey);
@@ -1672,18 +1674,20 @@ async function handleStaffReportEvent(event) {
     }
     if (!looksLikeStaffReportText(text) && session.images.length === 0 && !session.problem && !session.manualTrackingNo) return false;
 
-    const manualTrackingNo = extractTrackingNoFromText(text);
+    const manualTrackingNo = possibleManualTrackingNo;
     if (manualTrackingNo) {
       session.manualTrackingNo = manualTrackingNo;
     }
 
-    const problem = parseStaffProblemText(text);
+    const problem = parseStaffProblemText(text) || session.problem;
     if (!problem) {
       await saveStaffReportSession(sourceKey, session);
       if (manualTrackingNo) {
         await replyMessage(event.replyToken, '收到運單號，請再輸入問題和數量，例如：少3、破2、錯1。');
+      } else if (isStaffTrigger && session.images.length > 0) {
+        await replyMessage(event.replyToken, '收到照片，請再輸入問題和數量，例如：少3、破2、錯1。');
       } else {
-        await replyMessage(event.replyToken, '請輸入問題和數量，例如：少3、破2、錯1。');
+        await replyMessage(event.replyToken, '請輸入問題和數量，並附運單照片。例如：#回報 少3。');
       }
       return true;
     }
@@ -1694,10 +1698,17 @@ async function handleStaffReportEvent(event) {
   }
 
   if (event.message.type === 'image') {
-    if (!session.problem && !session.manualTrackingNo) return false;
+    if (!session.problem && !session.manualTrackingNo) {
+      if (isGroup) {
+        session.images.push({ messageId: event.message.id, createdAt: new Date().toISOString(), recentOnly: true });
+        session.images = pruneStaffReportImages(session.images);
+        await saveStaffReportSession(sourceKey, session);
+      }
+      return false;
+    }
 
     session.images.push({ messageId: event.message.id, createdAt: new Date().toISOString() });
-    if (session.images.length > 4) session.images = session.images.slice(-4);
+    session.images = pruneStaffReportImages(session.images);
     await saveStaffReportSession(sourceKey, session);
 
     if (!session.problem) {
