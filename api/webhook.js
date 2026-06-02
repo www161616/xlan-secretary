@@ -179,6 +179,17 @@ async function updateLatestExpenseCategory(category) {
   return `已改分類：${data.category} NT$${data.amount}`;
 }
 
+async function updateExpenseCategory(expenseId, category) {
+  const { data, error } = await supabase
+    .from('xlan_expenses')
+    .update({ category })
+    .eq('id', expenseId)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return `已改分類：${data.category} NT$${data.amount}`;
+}
+
 async function buildExpenseSummary(period = 'this_month') {
   const expenses = await getExpenses(period);
   const label = { today: '今天', this_week: '本週', this_month: '本月' }[period] || '本月';
@@ -337,17 +348,63 @@ function buildExpenseFlexMessage({ id, amount, category, note, type, account, la
               {
                 type: 'button',
                 height: 'sm',
-                action: { type: 'message', label: '本月摘要', text: '本月記帳摘要' },
+                action: { type: 'message', label: '分類', text: id ? `記帳:${id}:分類` : '最近一筆分類' },
               },
               {
                 type: 'button',
                 height: 'sm',
-                color: '#DC2626',
-                action: { type: 'message', label: '刪除', text: id ? `記帳:${id}:刪除` : '刪除最近一筆記帳' },
+                action: { type: 'message', label: '本月摘要', text: '本月記帳摘要' },
               },
             ],
           },
+          {
+            type: 'button',
+            height: 'sm',
+            color: '#DC2626',
+            action: { type: 'message', label: '刪除這筆', text: id ? `記帳:${id}:刪除` : '刪除最近一筆記帳' },
+          },
         ],
+      },
+    },
+  };
+}
+
+function buildExpenseCategoryFlex(expenseId) {
+  const categories = ['餐飲', '交通', '購物', '進貨', '門市', '薪資', '水電', '醫療', '娛樂', '其他'];
+  const rows = [];
+  for (let i = 0; i < categories.length; i += 2) {
+    rows.push({
+      type: 'box',
+      layout: 'horizontal',
+      spacing: 'sm',
+      contents: categories.slice(i, i + 2).map((category) => ({
+        type: 'button',
+        height: 'sm',
+        action: { type: 'message', label: category, text: expenseId ? `記帳:${expenseId}:分類:${category}` : `最近一筆分類${category}` },
+      })),
+    });
+  }
+
+  return {
+    type: 'flex',
+    altText: '選擇記帳分類',
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: [
+          { type: 'text', text: '選擇分類', weight: 'bold', size: 'lg', color: '#111827' },
+          { type: 'text', text: '這會更新剛剛那筆記帳。', size: 'sm', color: '#6B7280', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: rows,
       },
     },
   };
@@ -2562,11 +2619,16 @@ async function handleDirectMessage(event) {
     replyMessages = [{ type: 'text', text: rememberedUrl }];
   } else if (memoryUrlAnswer) {
     replyMessages = [{ type: 'text', text: memoryUrlAnswer }];
-  } else if (/^記帳:([0-9a-f-]+):(公司|私人|刪除)$/.test(text)) {
-    const match = text.match(/^記帳:([0-9a-f-]+):(公司|私人|刪除)$/);
+  } else if (/^記帳:([0-9a-f-]+):分類:(.+)$/.test(text)) {
+    const match = text.match(/^記帳:([0-9a-f-]+):分類:(.+)$/);
+    replyMessages = [{ type: 'text', text: await updateExpenseCategory(match[1], match[2].trim()) }];
+  } else if (/^記帳:([0-9a-f-]+):(公司|私人|刪除|分類)$/.test(text)) {
+    const match = text.match(/^記帳:([0-9a-f-]+):(公司|私人|刪除|分類)$/);
     const expenseId = match[1];
     const action = match[2];
-    if (action === '刪除') {
+    if (action === '分類') {
+      replyMessages = [buildExpenseCategoryFlex(expenseId)];
+    } else if (action === '刪除') {
       replyMessages = [{ type: 'text', text: await deleteExpense(expenseId) }];
     } else {
       replyMessages = [{ type: 'text', text: await updateExpenseAccount(expenseId, action === '公司' ? 'business' : 'personal') }];
@@ -2576,6 +2638,9 @@ async function handleDirectMessage(event) {
     replyMessages = [{ type: 'text', text: await updateLatestExpenseAccount(match[1] === '公司' ? 'business' : 'personal') }];
   } else if (/^刪除最近一筆記帳$/.test(text)) {
     replyMessages = [{ type: 'text', text: await deleteLatestExpense() }];
+  } else if (/^最近一筆分類$/.test(text)) {
+    const latest = await getLatestExpense();
+    replyMessages = latest ? [buildExpenseCategoryFlex(latest.id)] : [{ type: 'text', text: '找不到最近一筆記帳。' }];
   } else if (/^最近一筆分類(.+)$/.test(text)) {
     const match = text.match(/^最近一筆分類(.+)$/);
     replyMessages = [{ type: 'text', text: await updateLatestExpenseCategory(match[1].trim()) }];
