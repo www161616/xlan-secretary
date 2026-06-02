@@ -240,6 +240,12 @@ const SYSTEM_PROMPT = `【回覆規則】
 5. 回覆要簡短直接，不要超過3行，除非用戶需要詳細資訊
 6. LINE 不支援 Markdown，不要使用 **粗體**、反引號、標題符號或 Markdown 連結；網址直接貼純文字。
 
+【對話環境規則，最重要】
+- 私訊一對一：香奈是在直接跟你說話，可以自然對話、記錄、查詢、分析、看圖、記帳，不需要 # 關鍵字。
+- 群組：只有訊息以 # 或 ＃ 開頭時才代表叫你做事；沒有 # 的群組訊息一律不要回覆、不要記錄、不要判斷待辦。
+- 群組中 #回報 是員工缺貨/破損回報；#待辦 或 #其他內容 才進一般秘書功能。
+- 回答時要符合目前環境：私訊可以像秘書主動整理；群組只處理該則 # 指令，不延伸處理其他聊天內容。
+
 你是「小瀾」，香奈的專屬 AI 秘書。
 香奈是包子媽生鮮小舖的負責人，旗下有 16 個門市（中和、文山、龍潭、林口、永和、平鎮、經國、古華、南平等），
 同時負責管理 LT-ERP 系統、樂樂團購平台、各門市帳務與薪資。
@@ -1837,7 +1843,34 @@ async function handleToolUse(block, userMessage) {
 }
 
 // --- Claude API：AI 對話（支援 tool use）---
-async function chatWithClaude(userId, userContent) {
+function buildConversationContext(context = {}) {
+  const mode = context.mode === 'group' ? '群組' : '私訊一對一';
+  const trigger = context.trigger || (context.mode === 'group' ? '#' : '無需關鍵字');
+  return [
+    '【目前對話環境】',
+    `位置：${mode}`,
+    `觸發方式：${trigger}`,
+    context.mode === 'group'
+      ? '規則：這是群組中的明確 # 指令，只處理本次指令；不要處理其他沒有 # 的聊天內容。'
+      : '規則：這是香奈與小瀾的一對一私訊，可以自然對話、記錄、查詢、分析與看圖。',
+  ].join('\n');
+}
+
+function addContextToUserContent(userContent, context) {
+  const contextText = buildConversationContext(context);
+  if (typeof userContent === 'string') {
+    return `${contextText}\n\n【香奈訊息】\n${userContent}`;
+  }
+  if (Array.isArray(userContent)) {
+    return [
+      { type: 'text', text: contextText },
+      ...userContent,
+    ];
+  }
+  return userContent;
+}
+
+async function chatWithClaude(userId, userContent, context = {}) {
   const { data: history } = await supabase
     .from('xlan_conversations')
     .select('role, content')
@@ -1849,7 +1882,7 @@ async function chatWithClaude(userId, userContent) {
     role: h.role,
     content: h.content,
   }));
-  messages.push({ role: 'user', content: userContent });
+  messages.push({ role: 'user', content: addContextToUserContent(userContent, context) });
 
   let response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
@@ -2143,7 +2176,10 @@ async function handleGroupMessage(event) {
       if (!cleanedText) return;
 
       const userId = event.source.userId || 'group_user';
-      const { reply, flexMessages } = await chatWithClaude(userId, cleanedText);
+      const { reply, flexMessages } = await chatWithClaude(userId, cleanedText, {
+        mode: 'group',
+        trigger: '#',
+      });
       const messages = [];
       if (flexMessages.length > 0) messages.push(...flexMessages);
       if (reply) messages.push({ type: 'text', text: reply });
@@ -2176,7 +2212,10 @@ async function handleDirectMessage(event) {
         },
       ];
 
-      const { reply, flexMessages } = await chatWithClaude(userId, imageContent);
+      const { reply, flexMessages } = await chatWithClaude(userId, imageContent, {
+        mode: 'direct',
+        trigger: '私訊圖片',
+      });
       const labeledFlex = flexMessages.map((f) => {
         if (f.contents && f.contents.body && f.contents.body.contents) {
           const hasLabel = f.contents.body.contents[0] && f.contents.body.contents[0].contents &&
@@ -2250,7 +2289,10 @@ async function handleDirectMessage(event) {
     const n = parseInt(match[1], 10);
     replyMessages = [{ type: 'text', text: await postponeTodo(n, match[2]) }];
   } else {
-    const { reply, flexMessages } = await chatWithClaude(userId, text);
+    const { reply, flexMessages } = await chatWithClaude(userId, text, {
+      mode: 'direct',
+      trigger: '私訊文字',
+    });
     replyMessages = [];
     if (flexMessages.length > 0) replyMessages.push(...flexMessages);
     if (reply) replyMessages.push({ type: 'text', text: reply });
