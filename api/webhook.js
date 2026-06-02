@@ -724,6 +724,17 @@ function staffReportSourceAllowed(source) {
   return source && source.groupId === STAFF_REPORT_GROUP_ID;
 }
 
+function isStaffReportCancelText(text) {
+  return /^(取消|取消回報|不用回報|結束回報|算了)$/i.test(String(text || '').trim());
+}
+
+function shouldKeepStaffReportSession(text, session) {
+  if (isStaffReportTrigger(text)) return true;
+  if (parseStaffProblemText(text)) return true;
+  if (extractTrackingNoFromText(text)) return true;
+  return Boolean(session.problem || session.manualTrackingNo);
+}
+
 function getStaffSourceKey(source) {
   if (!source) return 'unknown';
   return ['staff_report', source.type || 'unknown', source.groupId || source.roomId || '', source.userId || ''].join(':');
@@ -1102,9 +1113,18 @@ async function handleStaffReportEvent(event) {
 
   if (event.message.type === 'text') {
     const text = (event.message.text || '').trim();
+    if (isStaffReportCancelText(text)) {
+      await clearStaffReportSession(sourceKey);
+      await replyMessage(event.replyToken, '已取消回報。');
+      return true;
+    }
     const groupTextWithoutKeyword = isGroup && !isStaffReportTrigger(text);
     if (groupTextWithoutKeyword) return false;
-    if (!looksLikeStaffReportText(text) && session.images.length === 0) return false;
+    if (!isGroup && session.images.length > 0 && !shouldKeepStaffReportSession(text, session)) {
+      await clearStaffReportSession(sourceKey);
+      return false;
+    }
+    if (!looksLikeStaffReportText(text) && session.images.length === 0 && !session.problem && !session.manualTrackingNo) return false;
 
     const manualTrackingNo = extractTrackingNoFromText(text);
     if (manualTrackingNo) {
