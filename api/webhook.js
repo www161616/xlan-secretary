@@ -804,16 +804,19 @@ async function buildAgentKnowledgeContext(userContent) {
 
   const { data: todos } = await supabase
     .from('xlan_todos')
-    .select('text, priority, source_person, project_name, created_at')
+    .select('id, text, priority, source_person, project_name, created_at')
     .eq('done', false)
     .order('created_at', { ascending: true })
     .limit(8);
   if (todos && todos.length > 0) {
+    const stateMap = await getTodoStateMap(todos);
     sections.push(`目前待辦：\n${todos.map((t, i) => {
+      const state = stateMap.get(t.id) || {};
       const pri = t.priority && t.priority !== 'normal' ? `/${t.priority}` : '';
       const owner = t.source_person ? `/${t.source_person}` : '';
       const proj = t.project_name ? `/${t.project_name}` : '';
-      return `${i + 1}. ${t.text}${pri}${owner}${proj}`;
+      const due = state.due_date ? `/延後到:${state.due_date}` : '';
+      return `${i + 1}. ${cleanTodoDisplayText(t.text)}/狀態:${state.status || '待處理'}${due}${pri}${owner}${proj}`;
     }).join('\n')}`);
   }
 
@@ -1397,6 +1400,71 @@ function withTodoSchedulePrefix(text, dueDate) {
   return `[延後到 ${dueDate}] ${stripTodoSchedulePrefix(text)}`;
 }
 
+function todoStateKey(todoId) {
+  return `todo_state:${todoId}`;
+}
+
+function parseTodoState(value) {
+  if (!value) return {};
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+function inferTodoStateFromText(text) {
+  const raw = String(text || '');
+  const statusMatch = raw.match(/^\[(進行中|半完成|未完成|等待回覆|待處理)\]\s*/);
+  const dueMatch = raw.match(/^\[延後到 ([^\]]+)\]\s*/);
+  return {
+    status: statusMatch ? statusMatch[1] : '待處理',
+    due_date: dueMatch ? dueMatch[1] : null,
+  };
+}
+
+async function getTodoStateMap(todos) {
+  const keys = (todos || []).map((todo) => todoStateKey(todo.id));
+  if (keys.length === 0) return new Map();
+  const { data } = await supabase.from('xlan_kv').select('key, value').in('key', keys);
+  const kvMap = new Map((data || []).map((row) => [row.key, parseTodoState(row.value)]));
+  return new Map((todos || []).map((todo) => {
+    const stored = kvMap.get(todoStateKey(todo.id)) || {};
+    return [todo.id, { ...inferTodoStateFromText(todo.text), ...stored }];
+  }));
+}
+
+async function saveTodoState(todoId, patch) {
+  const key = todoStateKey(todoId);
+  const { data } = await supabase.from('xlan_kv').select('value').eq('key', key).single();
+  const existing = parseTodoState(data?.value);
+  const next = {
+    ...existing,
+    ...patch,
+    updated_at: new Date().toISOString(),
+  };
+  await supabase.from('xlan_kv').upsert({ key, value: JSON.stringify(next) });
+  return next;
+}
+
+async function clearTodoState(todoId) {
+  await supabase.from('xlan_kv').delete().eq('key', todoStateKey(todoId));
+}
+
+function cleanTodoDisplayText(text) {
+  return stripTodoSchedulePrefix(stripTodoStatusPrefix(text));
+}
+
+function todoStatusIcon(status) {
+  return {
+    待處理: '⚪',
+    進行中: '🟡',
+    半完成: '🟠',
+    等待回覆: '🔵',
+    未完成: '⚫',
+  }[status || '待處理'] || '⚪';
+}
+
 async function getPendingTodos(limit = 100) {
   const { data } = await supabase
     .from('xlan_todos')
@@ -1437,7 +1505,8 @@ async function completeTodoByKeyword(keyword) {
     .from('xlan_todos')
     .update({ done: true, done_at: new Date().toISOString() })
     .eq('id', best.todo.id);
-  return `✅ 已完成：「${best.todo.text}」`;
+  await clearTodoState(best.todo.id);
+  return `✅ 已完成：「${cleanTodoDisplayText(best.todo.text)}」`;
 }
 
 async function deleteTodoByKeyword(keyword) {
@@ -1451,7 +1520,8 @@ async function deleteTodoByKeyword(keyword) {
     return ambiguousTodoReply(candidates, '刪除');
   }
   await supabase.from('xlan_todos').delete().eq('id', best.todo.id);
-  return `🗑️ 已刪除：「${best.todo.text}」`;
+  await clearTodoState(best.todo.id);
+  return `🗑️ 已刪除：「${cleanTodoDisplayText(best.todo.text)}」`;
 }
 
 async function postponeTodoByKeyword(keyword, dueText) {
@@ -1466,9 +1536,8 @@ async function postponeTodoByKeyword(keyword, dueText) {
   if (candidates.length > 1 && best.score === candidates[1].score && best.score < 8) {
     return ambiguousTodoReply(candidates, '延後');
   }
-  const nextText = withTodoSchedulePrefix(best.todo.text, dueDate);
-  await supabase.from('xlan_todos').update({ text: nextText }).eq('id', best.todo.id);
-  return `⏳ 已延後到 ${dueDate}：「${stripTodoSchedulePrefix(best.todo.text)}」`;
+  await saveTodoState(best.todo.id, { status: '待處理', due_date: dueDate });
+  return `⏳ 已延後到 ${dueDate}：「${cleanTodoDisplayText(best.todo.text)}」`;
 }
 
 // --- 處理 tool use 結果 ---
@@ -2025,22 +2094,30 @@ async function listTodos() {
   if (!data || data.length === 0) {
     return '目前沒有待辦事項，一切都處理好了！';
   }
+  const stateMap = await getTodoStateMap(data);
 
   const items = data
     .map((t, i) => {
+      const state = stateMap.get(t.id) || {};
       const source = t.source_group ? `（來自：群組）` : '';
-      return `${i + 1}. ${t.text}${source}`;
+      const due = state.due_date ? `｜延後到 ${state.due_date}` : '';
+      const status = `${todoStatusIcon(state.status)}${state.status || '待處理'}`;
+      return `${i + 1}. ${status} ${cleanTodoDisplayText(t.text)}${due}${source}`;
     })
     .join('\n');
 
-  return `📋 你的待辦清單\n\n${items}\n\n共 ${data.length} 項未完成。\n可回：完成第1項、延後第1項到明天、刪除第1項。`;
+  return `📋 你的待辦清單\n\n${items}\n\n共 ${data.length} 項未完成。\n可點卡片，或回：完成第1項、半完成第1項、等待第1項、延後第1項到明天。`;
 }
 
-function buildTodoActionFlex(todos) {
+function buildTodoActionFlex(todos, stateMap = new Map()) {
   const bubbles = todos.slice(0, 10).map((todo, i) => {
     const n = i + 1;
-    const title = todo.text.length > 54 ? `${todo.text.slice(0, 54)}...` : todo.text;
+    const state = stateMap.get(todo.id) || {};
+    const displayText = cleanTodoDisplayText(todo.text);
+    const title = displayText.length > 54 ? `${displayText.slice(0, 54)}...` : displayText;
     const source = todo.source_person ? `交辦：${todo.source_person}` : (todo.project_name ? `專案：${todo.project_name}` : '待辦事項');
+    const due = state.due_date ? `｜${state.due_date}` : '';
+    const status = `${todoStatusIcon(state.status)} ${state.status || '待處理'}${due}`;
     return {
       type: 'bubble',
       size: 'micro',
@@ -2051,6 +2128,7 @@ function buildTodoActionFlex(todos) {
         contents: [
           { type: 'text', text: `#${n}`, weight: 'bold', size: 'xs', color: '#6B7280' },
           { type: 'text', text: title, weight: 'bold', size: 'sm', wrap: true, color: '#111827' },
+          { type: 'text', text: status, size: 'xxs', color: '#374151', wrap: true },
           { type: 'text', text: source, size: 'xxs', color: '#6B7280', wrap: true },
         ],
       },
@@ -2079,7 +2157,7 @@ function buildTodoActionFlex(todos) {
               {
                 type: 'button',
                 height: 'sm',
-                action: { type: 'message', label: '未完成', text: `未完成第${n}項` },
+                action: { type: 'message', label: '半完成', text: `半完成第${n}項` },
               },
             ],
           },
@@ -2091,7 +2169,24 @@ function buildTodoActionFlex(todos) {
               {
                 type: 'button',
                 height: 'sm',
+                action: { type: 'message', label: '等回覆', text: `等待第${n}項` },
+              },
+              {
+                type: 'button',
+                height: 'sm',
                 action: { type: 'message', label: '明天', text: `延後第${n}項到明天` },
+              },
+            ],
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'xs',
+            contents: [
+              {
+                type: 'button',
+                height: 'sm',
+                action: { type: 'message', label: '未完成', text: `未完成第${n}項` },
               },
               {
                 type: 'button',
@@ -2128,9 +2223,10 @@ async function listTodoReplyMessages() {
   }
 
   const text = await listTodos();
+  const stateMap = await getTodoStateMap(data);
   return [
     { type: 'text', text },
-    buildTodoActionFlex(data),
+    buildTodoActionFlex(data, stateMap),
   ];
 }
 
@@ -2151,12 +2247,13 @@ async function completeTodo(n) {
     .from('xlan_todos')
     .update({ done: true, done_at: new Date().toISOString() })
     .eq('id', todo.id);
+  await clearTodoState(todo.id);
 
-  return `✅ 已完成：「${todo.text}」`;
+  return `✅ 已完成：「${cleanTodoDisplayText(todo.text)}」`;
 }
 
 function stripTodoStatusPrefix(text) {
-  return String(text || '').replace(/^\[(進行中|未完成)\]\s*/, '');
+  return String(text || '').replace(/^\[(進行中|半完成|未完成|等待回覆|待處理)\]\s*/, '');
 }
 
 function withTodoStatusPrefix(text, status) {
@@ -2175,11 +2272,9 @@ async function markTodoStatus(n, status) {
   }
 
   const todo = data[n - 1];
-  const nextText = withTodoStatusPrefix(todo.text, status);
-  await supabase.from('xlan_todos').update({ text: nextText }).eq('id', todo.id);
-  return status === '進行中'
-    ? `🟡 已標記進行中：「${stripTodoStatusPrefix(todo.text)}」`
-    : `⚪ 已標記未完成：「${stripTodoStatusPrefix(todo.text)}」`;
+  await saveTodoState(todo.id, { status });
+  const icon = todoStatusIcon(status);
+  return `${icon} 已標記${status}：「${cleanTodoDisplayText(todo.text)}」`;
 }
 
 async function deleteTodo(n) {
@@ -2195,7 +2290,8 @@ async function deleteTodo(n) {
 
   const todo = data[n - 1];
   await supabase.from('xlan_todos').delete().eq('id', todo.id);
-  return `🗑️ 已刪除：「${todo.text}」`;
+  await clearTodoState(todo.id);
+  return `🗑️ 已刪除：「${cleanTodoDisplayText(todo.text)}」`;
 }
 
 async function postponeTodo(n, dueText) {
@@ -2213,8 +2309,8 @@ async function postponeTodo(n, dueText) {
   if (!dueDate) return '要延後到什麼時候？例如：延後第1項到明天、延後第1項到6/5。';
 
   const todo = data[n - 1];
-  await supabase.from('xlan_todos').update({ text: withTodoSchedulePrefix(todo.text, dueDate) }).eq('id', todo.id);
-  return `⏳ 已延後到 ${dueDate}：「${stripTodoSchedulePrefix(todo.text)}」`;
+  await saveTodoState(todo.id, { status: '待處理', due_date: dueDate });
+  return `⏳ 已延後到 ${dueDate}：「${cleanTodoDisplayText(todo.text)}」`;
 }
 
 // --- 檢查訊息是否有 @ 小瀾 ---
@@ -2343,7 +2439,7 @@ async function handleDirectMessage(event) {
     replyMessages = [{ type: 'text', text: rememberedUrl }];
   } else if (memoryUrlAnswer) {
     replyMessages = [{ type: 'text', text: memoryUrlAnswer }];
-  } else if (/^(待辦|清單|有什麼事)$/.test(text)) {
+  } else if (/^(待辦|清單|有什麼事|盤點|檢查待辦|任務盤點)$/.test(text)) {
     replyMessages = await listTodoReplyMessages();
   } else if (/^完成第(\d+)項$/.test(text)) {
     const match = text.match(/^完成第(\d+)項$/);
@@ -2352,7 +2448,11 @@ async function handleDirectMessage(event) {
   } else if (/^(進行中|半完成)第(\d+)項$/.test(text)) {
     const match = text.match(/^(進行中|半完成)第(\d+)項$/);
     const n = parseInt(match[2], 10);
-    replyMessages = [{ type: 'text', text: await markTodoStatus(n, '進行中') }];
+    replyMessages = [{ type: 'text', text: await markTodoStatus(n, match[1] === '半完成' ? '半完成' : '進行中') }];
+  } else if (/^(等待|等回覆|等待回覆)第(\d+)項$/.test(text)) {
+    const match = text.match(/^(等待|等回覆|等待回覆)第(\d+)項$/);
+    const n = parseInt(match[2], 10);
+    replyMessages = [{ type: 'text', text: await markTodoStatus(n, '等待回覆') }];
   } else if (/^未完成第(\d+)項$/.test(text)) {
     const match = text.match(/^未完成第(\d+)項$/);
     const n = parseInt(match[1], 10);
