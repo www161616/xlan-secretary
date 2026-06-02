@@ -706,6 +706,62 @@ async function replyMessage(replyToken, messages) {
   }
 }
 
+function extractFirstUrl(text) {
+  const match = String(text || '').match(/https?:\/\/[^\s，。！？、)）]+/i);
+  return match ? match[0] : '';
+}
+
+function cleanMemoryKeyword(text) {
+  return String(text || '')
+    .replace(/https?:\/\/[^\s，。！？、)）]+/ig, '')
+    .replace(/(這是|這個是|幫我|幫|記一下|記起來|記錄|網址|網站|是多少|是什麼|請問|以後|下次|要回覆我|跟我說|告訴我|的)/g, ' ')
+    .replace(/[，。！？、,.!?;；:：\s"'「」『』（）()【】\[\]#]/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((part) => part.length >= 2)
+    .slice(0, 4)
+    .join(' ');
+}
+
+async function rememberUrlFromText(text) {
+  const url = extractFirstUrl(text);
+  if (!url) return null;
+  const keyword = cleanMemoryKeyword(text) || '網址';
+  const content = `${keyword}：${url}`;
+  await supabase.from('xlan_notes').insert({
+    content,
+    tags: ['網址'],
+  });
+  return `📝 已記錄：${keyword}`;
+}
+
+async function answerUrlFromMemory(text) {
+  if (!/網址|網站|連結|link|url/i.test(text)) return null;
+  const keyword = cleanMemoryKeyword(text);
+  if (!keyword) return null;
+
+  const words = keyword.split(/\s+/).filter(Boolean);
+  let notes = [];
+  for (const word of words) {
+    const { data } = await supabase
+      .from('xlan_notes')
+      .select('*')
+      .ilike('content', `%${word}%`)
+      .order('created_at', { ascending: false })
+      .limit(5);
+    notes = notes.concat(data || []);
+  }
+
+  const unique = Array.from(new Map(notes.map((note) => [note.id, note])).values());
+  const withUrls = unique
+    .map((note) => ({ note, url: extractFirstUrl(note.content) }))
+    .filter((item) => item.url);
+  if (withUrls.length === 0) return null;
+
+  const best = withUrls[0].note;
+  return best.content;
+}
+
 // --- Claude API：判斷是否為待辦 ---
 async function judgeTask(messageText) {
   const prompt = `以下是 LINE 群組裡的一則訊息。請判斷這則訊息是否包含交辦給香奈或負責人的待辦事項或需要處理的事情。
@@ -2035,11 +2091,13 @@ async function handleDirectMessage(event) {
   if (!text) return;
 
   let replyMessages;
+  const rememberedUrl = await rememberUrlFromText(text);
+  const memoryUrlAnswer = rememberedUrl ? null : await answerUrlFromMemory(text);
 
-  if (/新系統.*網址|包子媽.*系統.*網址|ERP.*網址/i.test(text)) {
-    replyMessages = [{ type: 'text', text: '新系統網址是：\nhttps://lt-foods.github.io/new_erp/' }];
-  } else if (/薪資系統.*網址/i.test(text)) {
-    replyMessages = [{ type: 'text', text: '薪資系統網址是：\nhttp://100.90.167.22:8765/' }];
+  if (rememberedUrl) {
+    replyMessages = [{ type: 'text', text: rememberedUrl }];
+  } else if (memoryUrlAnswer) {
+    replyMessages = [{ type: 'text', text: memoryUrlAnswer }];
   } else if (/^(待辦|清單|有什麼事)$/.test(text)) {
     replyMessages = [{ type: 'text', text: await listTodos() }];
   } else if (/^完成第(\d+)項$/.test(text)) {
