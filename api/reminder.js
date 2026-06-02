@@ -32,6 +32,68 @@ function getTodayStr(now) {
   return `${y}-${m}-${d}`;
 }
 
+function todoStateKey(todoId) {
+  return `todo_state:${todoId}`;
+}
+
+function parseTodoState(value) {
+  if (!value) return {};
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+function inferTodoStateFromText(text) {
+  const raw = String(text || '');
+  const statusMatch = raw.match(/^\[(進行中|半完成|未完成|等待回覆|待處理)\]\s*/);
+  const dueMatch = raw.match(/^\[延後到 ([^\]]+)\]\s*/);
+  return {
+    status: statusMatch ? statusMatch[1] : '待處理',
+    due_date: dueMatch ? dueMatch[1] : null,
+  };
+}
+
+async function getTodoStateMap(todos) {
+  const keys = (todos || []).map((todo) => todoStateKey(todo.id));
+  if (keys.length === 0) return new Map();
+  const { data } = await supabase.from('xlan_kv').select('key, value').in('key', keys);
+  const kvMap = new Map((data || []).map((row) => [row.key, parseTodoState(row.value)]));
+  return new Map((todos || []).map((todo) => {
+    const stored = kvMap.get(todoStateKey(todo.id)) || {};
+    return [todo.id, { ...inferTodoStateFromText(todo.text), ...stored }];
+  }));
+}
+
+function stripTodoStatusPrefix(text) {
+  return String(text || '').replace(/^\[(進行中|半完成|未完成|等待回覆|待處理)\]\s*/, '');
+}
+
+function stripTodoSchedulePrefix(text) {
+  return String(text || '').replace(/^\[延後到 [^\]]+\]\s*/, '');
+}
+
+function cleanTodoDisplayText(text) {
+  return stripTodoSchedulePrefix(stripTodoStatusPrefix(text));
+}
+
+function todoStatusIcon(status) {
+  return {
+    待處理: '⚪',
+    進行中: '🟡',
+    半完成: '🟠',
+    等待回覆: '🔵',
+    未完成: '⚫',
+  }[status || '待處理'] || '⚪';
+}
+
+function formatTodoLine(todo, state) {
+  const due = state?.due_date ? `（延後到${state.due_date}）` : '';
+  const pri = todo.priority === 'urgent' ? '🔴 ' : todo.priority === 'important' ? '🟡 ' : '';
+  return `${todoStatusIcon(state?.status)} ${pri}${cleanTodoDisplayText(todo.text)}${due}`;
+}
+
 // 把 "HH:MM" 轉成當天的分鐘數
 function timeToMinutes(timeStr) {
   if (!timeStr) return -1;
@@ -64,16 +126,19 @@ async function buildMorningSummary(now, todayStr) {
     .from('xlan_todos').select('*').eq('done', false)
     .order('created_at', { ascending: true });
   if (todos && todos.length > 0) {
+    const stateMap = await getTodoStateMap(todos);
     const urgent = todos.filter(t => t.priority === 'urgent');
     const important = todos.filter(t => t.priority === 'important');
     const normal = todos.filter(t => !t.priority || t.priority === 'normal');
-    const sorted = [...urgent, ...important, ...normal];
+    const waiting = todos.filter(t => (stateMap.get(t.id)?.status) === '等待回覆');
+    const inProgress = todos.filter(t => ['進行中', '半完成'].includes(stateMap.get(t.id)?.status));
+    const sorted = [...waiting, ...inProgress, ...urgent, ...important, ...normal]
+      .filter((todo, index, arr) => arr.findIndex((item) => item.id === todo.id) === index);
     const top5 = sorted.slice(0, 5);
-    const lines = top5.map(t => {
-      const icon = t.priority === 'urgent' ? '🔴 ' : t.priority === 'important' ? '🟡 ' : '⚪ ';
-      return `- ${icon}${t.text}`;
-    });
+    const lines = top5.map(t => `- ${formatTodoLine(t, stateMap.get(t.id))}`);
     let sec = `📋 待辦（共${todos.length}項）\n${lines.join('\n')}`;
+    if (waiting.length > 0) sec += `\n🔵 等待回覆：${waiting.length}項`;
+    if (inProgress.length > 0) sec += `\n🟡 進行中/半完成：${inProgress.length}項`;
     if (todos.length > 5) sec += `\n...還有${todos.length - 5}項`;
     sections.push(sec);
   }
@@ -217,10 +282,14 @@ async function checkCustomReminders(now) {
   // 下午提醒：列出待辦
   if (currentHour < 20) {
     const { data: todos } = await supabase
-      .from('xlan_todos').select('text').eq('done', false)
+      .from('xlan_todos').select('*').eq('done', false)
       .order('created_at', { ascending: true }).limit(10);
-    const items = (todos || []).map(t => `• ${t.text}`).join('\n');
-    return `📋 ${matched.label || matched.message || '提醒'}！目前待辦：\n${items || '（無待辦）'}\n\n有什麼需要處理的嗎？`;
+    const stateMap = await getTodoStateMap(todos || []);
+    const focus = (todos || [])
+      .filter(t => ['待處理', '進行中', '半完成', '等待回覆', '未完成'].includes(stateMap.get(t.id)?.status || '待處理'))
+      .slice(0, 6);
+    const items = focus.map((t, i) => `${i + 1}. ${formatTodoLine(t, stateMap.get(t.id))}`).join('\n');
+    return `📋 ${matched.label || matched.message || '提醒'}\n\n目前需要盤點：\n${items || '（無待辦）'}\n\n可回：完成第1項、半完成第1項、等待第1項、延後第1項到明天。`;
   }
 
   // 晚間總結：列出今天完成+未完成
@@ -229,13 +298,14 @@ async function checkCustomReminders(now) {
     .from('xlan_todos').select('text').eq('done', true)
     .gte('done_at', todayStart).order('done_at', { ascending: true });
   const { data: pendingTodos } = await supabase
-    .from('xlan_todos').select('text').eq('done', false)
+    .from('xlan_todos').select('*').eq('done', false)
     .order('created_at', { ascending: true }).limit(10);
+  const stateMap = await getTodoStateMap(pendingTodos || []);
 
   const doneLines = (doneTodos || []).map(t => `✅ ${t.text}`).join('\n') || '（今天沒有完成項目）';
-  const pendingLines = (pendingTodos || []).map(t => `🔲 ${t.text}`).join('\n') || '（全部完成！）';
+  const pendingLines = (pendingTodos || []).map((t, i) => `${i + 1}. ${formatTodoLine(t, stateMap.get(t.id))}`).join('\n') || '（全部完成！）';
 
-  return `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n未完成：\n${pendingLines}\n\n需要延後或調整什麼嗎？`;
+  return `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n還要追蹤：\n${pendingLines}\n\n可以回：完成第1項、半完成第1項、等待第1項、延後第1項到明天。`;
 }
 
 // --- 月底財務總結 ---
@@ -269,9 +339,10 @@ async function buildMonthlySummary(now) {
 
   // 未完成待辦前5
   const { data: pending } = await supabase
-    .from('xlan_todos').select('text').eq('done', false)
+    .from('xlan_todos').select('*').eq('done', false)
     .order('created_at', { ascending: true }).limit(5);
-  const pendingLines = (pending || []).map(t => `- ${t.text}`).join('\n') || '（無）';
+  const stateMap = await getTodoStateMap(pending || []);
+  const pendingLines = (pending || []).map(t => `- ${formatTodoLine(t, stateMap.get(t.id))}`).join('\n') || '（無）';
 
   return `📊 ${monthLabel}月財務總結\n\n💼 公司帳\n收入：NT$${bizIncome.toLocaleString()}\n支出：NT$${bizExpense.toLocaleString()}\n淨額：NT$${(bizIncome - bizExpense).toLocaleString()}\n\n👤 私人帳\n收入：NT$${perIncome.toLocaleString()}\n支出：NT$${perExpense.toLocaleString()}\n淨額：NT$${(perIncome - perExpense).toLocaleString()}\n\n✅ 本月完成待辦：${doneCount || 0}項\n🐛 本月修復Bug：${fixedCount || 0}項\n\n📋 未完成待辦（前5項）\n${pendingLines}`;
 }
