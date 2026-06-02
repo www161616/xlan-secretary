@@ -238,6 +238,7 @@ const SYSTEM_PROMPT = `【回覆規則】
 3. 絕對不可以說「對！你說得沒錯」作為開頭
 4. 收到「完成」「已完成」「做好了」「處理好了」這類訊息，如果能從訊息判斷是哪一件待辦，就一定要呼叫 complete_todo 標記完成；不能判斷是哪一件時，請用一句話請用戶補關鍵字或回「完成第N項」
 5. 回覆要簡短直接，不要超過3行，除非用戶需要詳細資訊
+6. LINE 不支援 Markdown，不要使用 **粗體**、反引號、標題符號或 Markdown 連結；網址直接貼純文字。
 
 你是「小瀾」，香奈的專屬 AI 秘書。
 香奈是包子媽生鮮小舖的負責人，旗下有 16 個門市（中和、文山、龍潭、林口、永和、平鎮、經國、古華、南平等），
@@ -669,6 +670,13 @@ function validateSignature(body, signature) {
 }
 
 // --- LINE 回覆訊息（支援 text 或 flex message 陣列）---
+function sanitizeLineText(text) {
+  return String(text || '')
+    .replace(/\*\*/g, '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '$1 $2');
+}
+
 async function replyMessage(replyToken, messages) {
   if (typeof messages === 'string') {
     messages = [{ type: 'text', text: messages }];
@@ -676,6 +684,11 @@ async function replyMessage(replyToken, messages) {
   if (!Array.isArray(messages)) {
     messages = [messages];
   }
+  messages = messages.map((message) => (
+    message && message.type === 'text'
+      ? { ...message, text: sanitizeLineText(message.text) }
+      : message
+  ));
 
   const res = await fetch('https://api.line.me/v2/bot/message/reply', {
     method: 'POST',
