@@ -1922,6 +1922,104 @@ async function listTodos() {
   return `📋 你的待辦清單\n\n${items}\n\n共 ${data.length} 項未完成。\n可回：完成第1項、延後第1項到明天、刪除第1項。`;
 }
 
+function buildTodoActionFlex(todos) {
+  const bubbles = todos.slice(0, 10).map((todo, i) => {
+    const n = i + 1;
+    const title = todo.text.length > 54 ? `${todo.text.slice(0, 54)}...` : todo.text;
+    const source = todo.source_person ? `交辦：${todo.source_person}` : (todo.project_name ? `專案：${todo.project_name}` : '待辦事項');
+    return {
+      type: 'bubble',
+      size: 'micro',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          { type: 'text', text: `#${n}`, weight: 'bold', size: 'xs', color: '#6B7280' },
+          { type: 'text', text: title, weight: 'bold', size: 'sm', wrap: true, color: '#111827' },
+          { type: 'text', text: source, size: 'xxs', color: '#6B7280', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'xs',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            height: 'sm',
+            color: '#16A34A',
+            action: { type: 'message', label: '完成', text: `完成第${n}項` },
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'xs',
+            contents: [
+              {
+                type: 'button',
+                height: 'sm',
+                action: { type: 'message', label: '進行中', text: `進行中第${n}項` },
+              },
+              {
+                type: 'button',
+                height: 'sm',
+                action: { type: 'message', label: '未完成', text: `未完成第${n}項` },
+              },
+            ],
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'xs',
+            contents: [
+              {
+                type: 'button',
+                height: 'sm',
+                action: { type: 'message', label: '明天', text: `延後第${n}項到明天` },
+              },
+              {
+                type: 'button',
+                height: 'sm',
+                color: '#DC2626',
+                action: { type: 'message', label: '刪除', text: `刪除第${n}項` },
+              },
+            ],
+          },
+        ],
+      },
+    };
+  });
+
+  return {
+    type: 'flex',
+    altText: '待辦操作卡片',
+    contents: {
+      type: 'carousel',
+      contents: bubbles,
+    },
+  };
+}
+
+async function listTodoReplyMessages() {
+  const { data } = await supabase
+    .from('xlan_todos')
+    .select('*')
+    .eq('done', false)
+    .order('created_at', { ascending: true });
+
+  if (!data || data.length === 0) {
+    return [{ type: 'text', text: '目前沒有待辦事項，一切都處理好了！' }];
+  }
+
+  const text = await listTodos();
+  return [
+    { type: 'text', text },
+    buildTodoActionFlex(data),
+  ];
+}
+
 // --- 標記待辦完成 ---
 async function completeTodo(n) {
   const { data } = await supabase
@@ -1941,6 +2039,33 @@ async function completeTodo(n) {
     .eq('id', todo.id);
 
   return `✅ 已完成：「${todo.text}」`;
+}
+
+function stripTodoStatusPrefix(text) {
+  return String(text || '').replace(/^\[(進行中|未完成)\]\s*/, '');
+}
+
+function withTodoStatusPrefix(text, status) {
+  return `[${status}] ${stripTodoStatusPrefix(text)}`;
+}
+
+async function markTodoStatus(n, status) {
+  const { data } = await supabase
+    .from('xlan_todos')
+    .select('*')
+    .eq('done', false)
+    .order('created_at', { ascending: true });
+
+  if (!data || n < 1 || n > data.length) {
+    return `找不到第 ${n} 項待辦，目前共 ${(data || []).length} 項未完成。`;
+  }
+
+  const todo = data[n - 1];
+  const nextText = withTodoStatusPrefix(todo.text, status);
+  await supabase.from('xlan_todos').update({ text: nextText }).eq('id', todo.id);
+  return status === '進行中'
+    ? `🟡 已標記進行中：「${stripTodoStatusPrefix(todo.text)}」`
+    : `⚪ 已標記未完成：「${stripTodoStatusPrefix(todo.text)}」`;
 }
 
 async function deleteTodo(n) {
@@ -2099,11 +2224,19 @@ async function handleDirectMessage(event) {
   } else if (memoryUrlAnswer) {
     replyMessages = [{ type: 'text', text: memoryUrlAnswer }];
   } else if (/^(待辦|清單|有什麼事)$/.test(text)) {
-    replyMessages = [{ type: 'text', text: await listTodos() }];
+    replyMessages = await listTodoReplyMessages();
   } else if (/^完成第(\d+)項$/.test(text)) {
     const match = text.match(/^完成第(\d+)項$/);
     const n = parseInt(match[1], 10);
     replyMessages = [{ type: 'text', text: await completeTodo(n) }];
+  } else if (/^(進行中|半完成)第(\d+)項$/.test(text)) {
+    const match = text.match(/^(進行中|半完成)第(\d+)項$/);
+    const n = parseInt(match[2], 10);
+    replyMessages = [{ type: 'text', text: await markTodoStatus(n, '進行中') }];
+  } else if (/^未完成第(\d+)項$/.test(text)) {
+    const match = text.match(/^未完成第(\d+)項$/);
+    const n = parseInt(match[1], 10);
+    replyMessages = [{ type: 'text', text: await markTodoStatus(n, '未完成') }];
   } else if (/^刪除第(\d+)項$/.test(text)) {
     const match = text.match(/^刪除第(\d+)項$/);
     const n = parseInt(match[1], 10);
