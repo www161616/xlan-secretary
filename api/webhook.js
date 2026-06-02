@@ -296,6 +296,9 @@ account 判斷：提到廠商名稱、進貨、業務往來、門市費用 = bus
 存完回覆「📝 已記錄筆記」。
 tags 根據內容自動分類，例如 ["業務","門市"]、["個人"]、["ERP"] 等。
 當用戶說「查筆記」「看筆記」「之前記了什麼」，呼叫 get_notes 列出筆記，不要問用戶問題。
+當用戶問「某某網址是多少」「之前給你的網址」「某某資料在哪」「你有沒有記某某」時，先呼叫 get_notes，用最明確的關鍵字查詢。
+如果查到筆記，直接回答筆記內容；不要說「我沒有記到」。
+不要在已完成記錄或查詢後補充不相關提醒、加入群組說明或操作建議。
 
 【定期付款】
 當用戶提到「每個月」「每年」「固定」「定期」付款或費用，呼叫 save_recurring 儲存。
@@ -1125,7 +1128,7 @@ async function handleStaffReportEvent(event) {
   }
 
   if (event.message.type === 'image') {
-    if (isGroup && !session.problem) return false;
+    if (!session.problem && !session.manualTrackingNo) return false;
 
     session.images.push({ messageId: event.message.id, createdAt: new Date().toISOString() });
     if (session.images.length > 4) session.images = session.images.slice(-4);
@@ -1953,7 +1956,7 @@ async function handleDirectMessage(event) {
         },
         {
           type: 'text',
-          text: '這是一張付款或匯款相關的截圖，請判讀並提取：金額、收款方/用途、日期（如果有的話），然後呼叫 save_expense 記錄這筆帳。note 請填「圖片記帳：{判讀內容摘要}」。如果看不出是記帳相關的圖片，就直接描述圖片內容。',
+          text: '請先判讀這張圖片，直接回答用戶可能想知道的重點。如果圖片是 LINE 對話或系統畫面，請說明畫面問題與下一步；不要要求用戶重新輸入問題。只有在圖片明確是付款、匯款、收據或費用截圖時，才提取金額、收款方/用途、日期並呼叫 save_expense 記帳。',
         },
       ];
 
