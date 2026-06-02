@@ -3,7 +3,23 @@ const { createClient } = require('@supabase/supabase-js');
 const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
-async function pushMessage(userId, text) {
+function sanitizeLineText(text) {
+  return String(text || '').replace(/\*\*/g, '').trim() || '已處理。';
+}
+
+async function pushMessage(userId, messages) {
+  if (typeof messages === 'string') {
+    messages = [{ type: 'text', text: messages }];
+  }
+  if (!Array.isArray(messages)) {
+    messages = [messages];
+  }
+  messages = messages.map((message) => (
+    message && message.type === 'text'
+      ? { ...message, text: sanitizeLineText(message.text) }
+      : message
+  ));
+
   const res = await fetch('https://api.line.me/v2/bot/message/push', {
     method: 'POST',
     headers: {
@@ -12,7 +28,7 @@ async function pushMessage(userId, text) {
     },
     body: JSON.stringify({
       to: userId,
-      messages: [{ type: 'text', text }],
+      messages,
     }),
   });
   if (!res.ok) {
@@ -92,6 +108,120 @@ function formatTodoLine(todo, state) {
   const due = state?.due_date ? `（延後到${state.due_date}）` : '';
   const pri = todo.priority === 'urgent' ? '🔴 ' : todo.priority === 'important' ? '🟡 ' : '';
   return `${todoStatusIcon(state?.status)} ${pri}${cleanTodoDisplayText(todo.text)}${due}`;
+}
+
+function buildReminderTodoFlex(todos, stateMap = new Map()) {
+  const bubbles = (todos || []).slice(0, 10).map((todo, i) => {
+    const n = i + 1;
+    const state = stateMap.get(todo.id) || {};
+    const title = cleanTodoDisplayText(todo.text);
+    const displayTitle = title.length > 54 ? `${title.slice(0, 54)}...` : title;
+    const due = state.due_date ? `｜${state.due_date}` : '';
+    const status = `${todoStatusIcon(state.status)} ${state.status || '待處理'}${due}`;
+
+    return {
+      type: 'bubble',
+      size: 'micro',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          { type: 'text', text: `#${n}`, weight: 'bold', size: 'xs', color: '#6B7280' },
+          { type: 'text', text: displayTitle, weight: 'bold', size: 'sm', color: '#111827', wrap: true },
+          { type: 'text', text: status, size: 'xxs', color: '#374151', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'xs',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            height: 'sm',
+            color: '#16A34A',
+            action: { type: 'message', label: '完成', text: `完成第${n}項` },
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'xs',
+            contents: [
+              { type: 'button', height: 'sm', action: { type: 'message', label: '半完成', text: `半完成第${n}項` } },
+              { type: 'button', height: 'sm', action: { type: 'message', label: '等待', text: `等待第${n}項` } },
+            ],
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'xs',
+            contents: [
+              { type: 'button', height: 'sm', action: { type: 'message', label: '明天', text: `延後第${n}項到明天` } },
+              { type: 'button', height: 'sm', color: '#DC2626', action: { type: 'message', label: '刪除', text: `刪除第${n}項` } },
+            ],
+          },
+        ],
+      },
+    };
+  });
+
+  if (bubbles.length === 0) return null;
+
+  return {
+    type: 'flex',
+    altText: '待辦操作卡片',
+    contents: {
+      type: 'carousel',
+      contents: bubbles,
+    },
+  };
+}
+
+function buildExpenseReminderFlex() {
+  return {
+    type: 'flex',
+    altText: '帳務快捷卡片',
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: [
+          { type: 'text', text: '帳務快捷處理', weight: 'bold', size: 'lg', color: '#111827' },
+          { type: 'text', text: '今天有記錯的帳，可以直接點下面修正。', size: 'sm', color: '#6B7280', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'sm',
+            contents: [
+              { type: 'button', height: 'sm', action: { type: 'message', label: '今天帳務', text: '今天帳務' } },
+              { type: 'button', height: 'sm', action: { type: 'message', label: '本月帳務', text: '本月帳務' } },
+            ],
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'sm',
+            contents: [
+              { type: 'button', height: 'sm', action: { type: 'message', label: '算公司', text: '最近一筆算公司' } },
+              { type: 'button', height: 'sm', action: { type: 'message', label: '分類', text: '最近一筆分類' } },
+            ],
+          },
+        ],
+      },
+    },
+  };
 }
 
 async function buildDailyExpenseCheck(todayStr) {
@@ -321,7 +451,13 @@ async function checkCustomReminders(now) {
       .slice(0, 6);
     const items = focus.map((t, i) => `${i + 1}. ${formatTodoLine(t, stateMap.get(t.id))}`).join('\n');
     const expenseCheck = await buildDailyExpenseCheck(getTodayStr(now));
-    return `📋 ${matched.label || matched.message || '提醒'}\n\n目前需要盤點：\n${items || '（無待辦）'}\n\n${expenseCheck}\n\n可回：完成第1項、半完成第1項、等待第1項、延後第1項到明天。`;
+    const messages = [
+      { type: 'text', text: `📋 ${matched.label || matched.message || '提醒'}\n\n目前需要盤點：\n${items || '（無待辦）'}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
+    ];
+    const todoFlex = buildReminderTodoFlex(focus, stateMap);
+    if (todoFlex) messages.push(todoFlex);
+    messages.push(buildExpenseReminderFlex());
+    return messages;
   }
 
   // 晚間總結：列出今天完成+未完成
@@ -336,9 +472,15 @@ async function checkCustomReminders(now) {
 
   const doneLines = (doneTodos || []).map(t => `✅ ${t.text}`).join('\n') || '（今天沒有完成項目）';
   const pendingLines = (pendingTodos || []).map((t, i) => `${i + 1}. ${formatTodoLine(t, stateMap.get(t.id))}`).join('\n') || '（全部完成！）';
-  const expenseCheck = await buildDailyExpenseCheck(todayStr);
+  const expenseCheck = await buildDailyExpenseCheck(getTodayStr(now));
 
-  return `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n還要追蹤：\n${pendingLines}\n\n${expenseCheck}\n\n可以回：完成第1項、半完成第1項、等待第1項、延後第1項到明天。`;
+  const messages = [
+    { type: 'text', text: `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n還要追蹤：\n${pendingLines}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
+  ];
+  const todoFlex = buildReminderTodoFlex(pendingTodos || [], stateMap);
+  if (todoFlex) messages.push(todoFlex);
+  messages.push(buildExpenseReminderFlex());
+  return messages;
 }
 
 // --- 月底財務總結 ---
