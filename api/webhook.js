@@ -209,6 +209,84 @@ async function buildExpenseSummary(period = 'this_month') {
   return `${label}記帳摘要\n收入：NT$${income}\n支出：NT$${expense}\n私人支出：NT$${personalExpense}\n公司支出：NT$${businessExpense}\n\n最近5筆：\n${top}`;
 }
 
+function buildExpenseQuickActionFlex(latestExpense, periodLabel = '今天') {
+  const latestText = latestExpense
+    ? `最近一筆：${latestExpense.category} NT$${latestExpense.amount}`
+    : '目前沒有最近一筆可修正。';
+  const latestId = latestExpense?.id || null;
+  return {
+    type: 'flex',
+    altText: `${periodLabel}帳務快捷卡片`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: [
+          { type: 'text', text: `${periodLabel}帳務處理`, weight: 'bold', size: 'lg', color: '#111827' },
+          { type: 'text', text: latestText, size: 'sm', color: '#374151', wrap: true },
+          { type: 'text', text: '如果最近一筆分類或公司/私人錯了，可以直接點。', size: 'xs', color: '#6B7280', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'sm',
+            contents: [
+              {
+                type: 'button',
+                height: 'sm',
+                action: { type: 'message', label: '算公司', text: latestId ? `記帳:${latestId}:公司` : '最近一筆算公司' },
+              },
+              {
+                type: 'button',
+                height: 'sm',
+                action: { type: 'message', label: '算私人', text: latestId ? `記帳:${latestId}:私人` : '最近一筆算私人' },
+              },
+            ],
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'sm',
+            contents: [
+              {
+                type: 'button',
+                height: 'sm',
+                action: { type: 'message', label: '改分類', text: latestId ? `記帳:${latestId}:分類` : '最近一筆分類' },
+              },
+              {
+                type: 'button',
+                height: 'sm',
+                color: '#DC2626',
+                action: { type: 'message', label: '刪除', text: latestId ? `記帳:${latestId}:刪除` : '刪除最近一筆記帳' },
+              },
+            ],
+          },
+        ],
+      },
+    },
+  };
+}
+
+async function buildExpenseSummaryReplyMessages(period = 'this_month') {
+  const text = await buildExpenseSummary(period);
+  const expenses = await getExpenses(period);
+  const label = { today: '今天', this_week: '本週', this_month: '本月' }[period] || '本月';
+  const messages = [{ type: 'text', text }];
+  if (expenses.length > 0) {
+    messages.push(buildExpenseQuickActionFlex(expenses[0], label));
+  }
+  return messages;
+}
+
 // --- LINE 下載圖片 ---
 async function downloadLineImage(messageId) {
   const buffer = await downloadLineImageBuffer(messageId);
@@ -2979,12 +3057,12 @@ async function handleDirectMessage(event) {
   } else if (/^最近一筆分類(.+)$/.test(text)) {
     const match = text.match(/^最近一筆分類(.+)$/);
     replyMessages = [{ type: 'text', text: await updateLatestExpenseCategory(match[1].trim()) }];
-  } else if (/^(本月記帳摘要|本月帳務|本月收支)$/.test(text)) {
-    replyMessages = [{ type: 'text', text: await buildExpenseSummary('this_month') }];
-  } else if (/^(今天記帳摘要|今天帳務|今天收支)$/.test(text)) {
-    replyMessages = [{ type: 'text', text: await buildExpenseSummary('today') }];
-  } else if (/^(本週記帳摘要|本週帳務|本週收支)$/.test(text)) {
-    replyMessages = [{ type: 'text', text: await buildExpenseSummary('this_week') }];
+  } else if (/^(本月記帳摘要|本月帳務|本月收支|這個月帳務|這個月花多少)$/.test(text)) {
+    replyMessages = await buildExpenseSummaryReplyMessages('this_month');
+  } else if (/^(今天記帳摘要|今天帳務|今天收支|今天花多少|今天花了多少|今日帳務)$/.test(text)) {
+    replyMessages = await buildExpenseSummaryReplyMessages('today');
+  } else if (/^(本週記帳摘要|本週帳務|本週收支|這週帳務|這週花多少)$/.test(text)) {
+    replyMessages = await buildExpenseSummaryReplyMessages('this_week');
   } else if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(text)) {
     replyMessages = await buildSecretaryBriefingMessages();
   } else if (/^(待辦|清單|檢查待辦|任務清單)$/.test(text)) {
