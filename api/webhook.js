@@ -1644,6 +1644,12 @@ function todoStatusIcon(status) {
   }[status || '待處理'] || '⚪';
 }
 
+function formatTodoLine(todo, state = {}) {
+  const due = state?.due_date ? `（延後到${state.due_date}）` : '';
+  const pri = todo.priority === 'urgent' ? '🔴 ' : todo.priority === 'important' ? '🟡 ' : '';
+  return `${todoStatusIcon(state?.status)} ${pri}${cleanTodoDisplayText(todo.text)}${due}`;
+}
+
 async function getPendingTodos(limit = 100) {
   const { data } = await supabase
     .from('xlan_todos')
@@ -2391,6 +2397,137 @@ function buildTodoActionFlex(todos, stateMap = new Map()) {
   };
 }
 
+function todoDueRank(state, todayStr) {
+  if (!state?.due_date) return 3;
+  if (state.due_date < todayStr) return 0;
+  if (state.due_date === todayStr) return 1;
+  return 2;
+}
+
+function todoAgeDays(todo) {
+  if (!todo.created_at) return 0;
+  return Math.floor((Date.now() - new Date(todo.created_at).getTime()) / 86400000);
+}
+
+function sortTodosForBriefing(todos, stateMap, todayStr) {
+  return [...(todos || [])].sort((a, b) => {
+    const aState = stateMap.get(a.id) || {};
+    const bState = stateMap.get(b.id) || {};
+    const statusWeight = {
+      未完成: 90,
+      半完成: 80,
+      待處理: 70,
+      進行中: 65,
+      等待回覆: 50,
+    };
+    const priorityWeight = { urgent: 120, important: 40, normal: 0 };
+    const aDue = todoDueRank(aState, todayStr);
+    const bDue = todoDueRank(bState, todayStr);
+    const aScore = (priorityWeight[a.priority || 'normal'] || 0)
+      + (statusWeight[aState.status || '待處理'] || 0)
+      + (aDue === 0 ? 35 : aDue === 1 ? 25 : 0);
+    const bScore = (priorityWeight[b.priority || 'normal'] || 0)
+      + (statusWeight[bState.status || '待處理'] || 0)
+      + (bDue === 0 ? 35 : bDue === 1 ? 25 : 0);
+    if (aScore !== bScore) return bScore - aScore;
+    return new Date(a.created_at || 0) - new Date(b.created_at || 0);
+  });
+}
+
+function summarizeExpensesForBriefing(expenses) {
+  if (!expenses || expenses.length === 0) {
+    return '今天還沒有記帳。若有現金支出、進貨、匯款，可以直接傳給我。';
+  }
+  const sum = (items, type, account) => items
+    .filter((e) => e.type === type && (!account || e.account === account))
+    .reduce((total, e) => total + Number(e.amount || 0), 0);
+  const income = sum(expenses, 'income');
+  const expense = sum(expenses, 'expense');
+  const businessExpense = sum(expenses, 'expense', 'business');
+  const personalExpense = sum(expenses, 'expense', 'personal');
+  return `收入 NT$${income}，支出 NT$${expense}，公司 NT$${businessExpense}，私人 NT$${personalExpense}。`;
+}
+
+function buildBriefingQuickActionFlex() {
+  return {
+    type: 'flex',
+    altText: '秘書快捷卡片',
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: [
+          { type: 'text', text: '快捷處理', weight: 'bold', size: 'lg', color: '#111827' },
+          { type: 'text', text: '帳務或最近一筆記錯，可以直接點。', size: 'sm', color: '#6B7280', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'sm',
+            contents: [
+              { type: 'button', height: 'sm', action: { type: 'message', label: '今天帳務', text: '今天帳務' } },
+              { type: 'button', height: 'sm', action: { type: 'message', label: '本月帳務', text: '本月帳務' } },
+            ],
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'sm',
+            contents: [
+              { type: 'button', height: 'sm', action: { type: 'message', label: '算公司', text: '最近一筆算公司' } },
+              { type: 'button', height: 'sm', action: { type: 'message', label: '分類', text: '最近一筆分類' } },
+            ],
+          },
+        ],
+      },
+    },
+  };
+}
+
+async function buildSecretaryBriefingMessages() {
+  const todos = await getPendingTodos(50);
+  const stateMap = await getTodoStateMap(todos);
+  const todayStr = formatDateYmd(getTaipeiDate());
+  const sorted = sortTodosForBriefing(todos, stateMap, todayStr);
+  const top = sorted.slice(0, 3);
+  const waiting = sorted.filter((todo) => (stateMap.get(todo.id)?.status || '待處理') === '等待回覆').slice(0, 5);
+  const halfDone = sorted.filter((todo) => (stateMap.get(todo.id)?.status || '待處理') === '半完成').slice(0, 5);
+  const stale = sorted.filter((todo) => {
+    const status = stateMap.get(todo.id)?.status || '待處理';
+    return ['待處理', '未完成'].includes(status) && todoAgeDays(todo) >= 2;
+  }).slice(0, 5);
+  const expenses = await getExpenses('today');
+
+  const line = (todo, i) => {
+    const state = stateMap.get(todo.id) || {};
+    return `${i + 1}. ${formatTodoLine(todo, state)}`;
+  };
+  const bullet = (todo) => `- ${formatTodoLine(todo, stateMap.get(todo.id))}`;
+  const sections = [
+    '今天我會先看這幾件：',
+    top.length > 0 ? top.map(line).join('\n') : '目前沒有急件。',
+  ];
+  if (waiting.length > 0) sections.push(`\n等待回覆：\n${waiting.map(bullet).join('\n')}`);
+  if (halfDone.length > 0) sections.push(`\n半完成：\n${halfDone.map(bullet).join('\n')}`);
+  if (stale.length > 0) sections.push(`\n卡比較久：\n${stale.map(bullet).join('\n')}`);
+  sections.push(`\n今日帳務：\n${summarizeExpensesForBriefing(expenses)}`);
+  sections.push('\n你可以直接點下面卡片處理。');
+
+  const messages = [{ type: 'text', text: sections.join('\n') }];
+  if (sorted.length > 0) messages.push(buildTodoActionFlex(sorted, stateMap));
+  messages.push(buildBriefingQuickActionFlex());
+  return messages;
+}
+
 async function listTodoReplyMessages() {
   const { data } = await supabase
     .from('xlan_todos')
@@ -2650,7 +2787,9 @@ async function handleDirectMessage(event) {
     replyMessages = [{ type: 'text', text: await buildExpenseSummary('today') }];
   } else if (/^(本週記帳摘要|本週帳務|本週收支)$/.test(text)) {
     replyMessages = [{ type: 'text', text: await buildExpenseSummary('this_week') }];
-  } else if (/^(待辦|清單|有什麼事|盤點|檢查待辦|任務盤點)$/.test(text)) {
+  } else if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(text)) {
+    replyMessages = await buildSecretaryBriefingMessages();
+  } else if (/^(待辦|清單|檢查待辦|任務清單)$/.test(text)) {
     replyMessages = await listTodoReplyMessages();
   } else if (/^完成第(\d+)項$/.test(text)) {
     const match = text.match(/^完成第(\d+)項$/);
