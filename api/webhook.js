@@ -120,6 +120,84 @@ async function getExpenses(period) {
   return data || [];
 }
 
+async function updateExpenseAccount(expenseId, account) {
+  const { data, error } = await supabase
+    .from('xlan_expenses')
+    .update({ account })
+    .eq('id', expenseId)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  const label = account === 'business' ? '公司' : '私人';
+  return `已改成${label}帳：${data.category} NT$${data.amount}`;
+}
+
+async function deleteExpense(expenseId) {
+  const { data, error } = await supabase
+    .from('xlan_expenses')
+    .delete()
+    .eq('id', expenseId)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return `已刪除記帳：${data.category} NT$${data.amount}`;
+}
+
+async function getLatestExpense() {
+  const { data, error } = await supabase
+    .from('xlan_expenses')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .single();
+  if (error || !data) return null;
+  return data;
+}
+
+async function updateLatestExpenseAccount(account) {
+  const latest = await getLatestExpense();
+  if (!latest) return '找不到最近一筆記帳。';
+  return updateExpenseAccount(latest.id, account);
+}
+
+async function deleteLatestExpense() {
+  const latest = await getLatestExpense();
+  if (!latest) return '找不到最近一筆記帳。';
+  return deleteExpense(latest.id);
+}
+
+async function updateLatestExpenseCategory(category) {
+  const latest = await getLatestExpense();
+  if (!latest) return '找不到最近一筆記帳。';
+  const { data, error } = await supabase
+    .from('xlan_expenses')
+    .update({ category })
+    .eq('id', latest.id)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return `已改分類：${data.category} NT$${data.amount}`;
+}
+
+async function buildExpenseSummary(period = 'this_month') {
+  const expenses = await getExpenses(period);
+  const label = { today: '今天', this_week: '本週', this_month: '本月' }[period] || '本月';
+  if (expenses.length === 0) return `${label}沒有記帳資料。`;
+  const sum = (items, type, account) => items
+    .filter((e) => e.type === type && (!account || e.account === account))
+    .reduce((total, e) => total + Number(e.amount || 0), 0);
+  const personalExpense = sum(expenses, 'expense', 'personal');
+  const businessExpense = sum(expenses, 'expense', 'business');
+  const income = sum(expenses, 'income');
+  const expense = sum(expenses, 'expense');
+  const top = expenses.slice(0, 5).map((e, i) => {
+    const account = e.account === 'business' ? '公司' : '私人';
+    const type = e.type === 'income' ? '收入' : '支出';
+    return `${i + 1}. ${account}${type} ${e.category} NT$${e.amount}${e.note ? `（${e.note}`.slice(0, 28) + '）' : ''}`;
+  }).join('\n');
+  return `${label}記帳摘要\n收入：NT$${income}\n支出：NT$${expense}\n私人支出：NT$${personalExpense}\n公司支出：NT$${businessExpense}\n\n最近5筆：\n${top}`;
+}
+
 // --- LINE 下載圖片 ---
 async function downloadLineImage(messageId) {
   const buffer = await downloadLineImageBuffer(messageId);
@@ -135,7 +213,7 @@ async function downloadLineImageBuffer(messageId) {
 }
 
 // --- Flex Message：記帳卡片 ---
-function buildExpenseFlexMessage({ amount, category, note, type, account, label }) {
+function buildExpenseFlexMessage({ id, amount, category, note, type, account, label }) {
   const isIncome = type === 'income';
   const color = isIncome ? '#4CAF50' : '#FF6B6B';
   const typeText = isIncome ? '收入' : '支出';
@@ -224,6 +302,50 @@ function buildExpenseFlexMessage({ amount, category, note, type, account, label 
             color: '#FFFFFF60',
             align: 'end',
             margin: 'lg',
+          },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'sm',
+            contents: [
+              {
+                type: 'button',
+                style: account === 'business' ? 'primary' : 'secondary',
+                height: 'sm',
+                action: { type: 'message', label: '公司', text: id ? `記帳:${id}:公司` : '最近一筆算公司' },
+              },
+              {
+                type: 'button',
+                style: account === 'personal' ? 'primary' : 'secondary',
+                height: 'sm',
+                action: { type: 'message', label: '私人', text: id ? `記帳:${id}:私人` : '最近一筆算私人' },
+              },
+            ],
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'sm',
+            contents: [
+              {
+                type: 'button',
+                height: 'sm',
+                action: { type: 'message', label: '本月摘要', text: '本月記帳摘要' },
+              },
+              {
+                type: 'button',
+                height: 'sm',
+                color: '#DC2626',
+                action: { type: 'message', label: '刪除', text: id ? `記帳:${id}:刪除` : '刪除最近一筆記帳' },
+              },
+            ],
           },
         ],
       },
@@ -1607,8 +1729,9 @@ async function handleToolUse(block, userMessage) {
 
   if (block.name === 'save_expense') {
     try {
-      await saveExpense(block.input);
+      const savedExpense = await saveExpense(block.input);
       const flex = buildExpenseFlexMessage({
+        id: savedExpense.id,
         amount: block.input.amount,
         category: block.input.category,
         note: block.input.note,
@@ -2439,6 +2562,29 @@ async function handleDirectMessage(event) {
     replyMessages = [{ type: 'text', text: rememberedUrl }];
   } else if (memoryUrlAnswer) {
     replyMessages = [{ type: 'text', text: memoryUrlAnswer }];
+  } else if (/^記帳:([0-9a-f-]+):(公司|私人|刪除)$/.test(text)) {
+    const match = text.match(/^記帳:([0-9a-f-]+):(公司|私人|刪除)$/);
+    const expenseId = match[1];
+    const action = match[2];
+    if (action === '刪除') {
+      replyMessages = [{ type: 'text', text: await deleteExpense(expenseId) }];
+    } else {
+      replyMessages = [{ type: 'text', text: await updateExpenseAccount(expenseId, action === '公司' ? 'business' : 'personal') }];
+    }
+  } else if (/^最近一筆算(公司|私人)$/.test(text)) {
+    const match = text.match(/^最近一筆算(公司|私人)$/);
+    replyMessages = [{ type: 'text', text: await updateLatestExpenseAccount(match[1] === '公司' ? 'business' : 'personal') }];
+  } else if (/^刪除最近一筆記帳$/.test(text)) {
+    replyMessages = [{ type: 'text', text: await deleteLatestExpense() }];
+  } else if (/^最近一筆分類(.+)$/.test(text)) {
+    const match = text.match(/^最近一筆分類(.+)$/);
+    replyMessages = [{ type: 'text', text: await updateLatestExpenseCategory(match[1].trim()) }];
+  } else if (/^(本月記帳摘要|本月帳務|本月收支)$/.test(text)) {
+    replyMessages = [{ type: 'text', text: await buildExpenseSummary('this_month') }];
+  } else if (/^(今天記帳摘要|今天帳務|今天收支)$/.test(text)) {
+    replyMessages = [{ type: 'text', text: await buildExpenseSummary('today') }];
+  } else if (/^(本週記帳摘要|本週帳務|本週收支)$/.test(text)) {
+    replyMessages = [{ type: 'text', text: await buildExpenseSummary('this_week') }];
   } else if (/^(待辦|清單|有什麼事|盤點|檢查待辦|任務盤點)$/.test(text)) {
     replyMessages = await listTodoReplyMessages();
   } else if (/^完成第(\d+)項$/.test(text)) {
