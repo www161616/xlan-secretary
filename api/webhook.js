@@ -249,7 +249,8 @@ const SYSTEM_PROMPT = `【回覆規則】
 - LINE Webhook：https://xlan-secretary.vercel.app/webhook
 - GitHub 專案：www161616/xlan-secretary
 - 員工回報 Google Sheet 分頁：員工問題回報
-當香奈詢問「後台網址」「webhook」「小瀾網址」「系統網址」時，直接回答上述資訊，不要說不知道。
+只有當香奈明確詢問「小瀾後台」「小瀾 webhook」「LINE webhook」「小瀾網址」時，才回答上述小瀾系統資訊。
+如果香奈問「新系統網址」「薪資系統網址」「ERP網址」「包子媽系統網址」這類業務系統網址，不可以回答小瀾 webhook，必須呼叫 get_notes 查筆記。
 
 你的工作原則：
 - 繁體中文回答，親切簡潔
@@ -294,10 +295,11 @@ account 判斷：提到廠商名稱、進貨、業務往來、門市費用 = bus
 
 【筆記功能】
 當用戶說「記一下」「備忘」「筆記」「記住」等，或提到重要資訊但不是待辦也不是帳務，呼叫 save_note 儲存。
-存完回覆「📝 已記錄筆記」。
+如果內容包含網址，呼叫 save_note 儲存，content 必須包含「名稱 + 網址 + 用途」。存完只回覆「📝 已記錄：{名稱}」，不要補充任何建議。
+其他筆記存完回覆「📝 已記錄筆記」。
 tags 根據內容自動分類，例如 ["業務","門市"]、["個人"]、["ERP"] 等。
 當用戶說「查筆記」「看筆記」「之前記了什麼」，呼叫 get_notes 列出筆記，不要問用戶問題。
-當用戶問「某某網址是多少」「之前給你的網址」「某某資料在哪」「你有沒有記某某」時，先呼叫 get_notes，用最明確的關鍵字查詢。
+當用戶問「某某網址是多少」「之前給你的網址」「某某資料在哪」「你有沒有記某某」時，先呼叫 get_notes，用最明確的關鍵字查詢；例如「新系統網址」查「新系統」，「薪資系統網址」查「薪資系統」。
 如果查到筆記，直接回答筆記內容；不要說「我沒有記到」。
 不要在已完成記錄或查詢後補充不相關提醒、加入群組說明或操作建議。
 
@@ -2034,7 +2036,11 @@ async function handleDirectMessage(event) {
 
   let replyMessages;
 
-  if (/^(待辦|清單|有什麼事)$/.test(text)) {
+  if (/新系統.*網址|包子媽.*系統.*網址|ERP.*網址/i.test(text)) {
+    replyMessages = [{ type: 'text', text: '新系統網址是：\nhttps://lt-foods.github.io/new_erp/' }];
+  } else if (/薪資系統.*網址/i.test(text)) {
+    replyMessages = [{ type: 'text', text: '薪資系統網址是：\nhttp://100.90.167.22:8765/' }];
+  } else if (/^(待辦|清單|有什麼事)$/.test(text)) {
     replyMessages = [{ type: 'text', text: await listTodos() }];
   } else if (/^完成第(\d+)項$/.test(text)) {
     const match = text.match(/^完成第(\d+)項$/);
