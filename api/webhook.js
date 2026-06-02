@@ -768,6 +768,83 @@ async function answerUrlFromMemory(text) {
   return best.content;
 }
 
+function keywordPartsFromText(text) {
+  return cleanMemoryKeyword(text)
+    .split(/\s+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 2)
+    .slice(0, 6);
+}
+
+async function getRelevantNotesForContext(text) {
+  const words = keywordPartsFromText(text);
+  const noteMap = new Map();
+  for (const word of words) {
+    const { data } = await supabase
+      .from('xlan_notes')
+      .select('content, tags, created_at')
+      .ilike('content', `%${word}%`)
+      .order('created_at', { ascending: false })
+      .limit(5);
+    for (const note of data || []) {
+      noteMap.set(`${note.created_at}:${note.content}`, note);
+    }
+  }
+  return Array.from(noteMap.values()).slice(0, 5);
+}
+
+async function buildAgentKnowledgeContext(userContent) {
+  const userText = typeof userContent === 'string' ? userContent : '';
+  const sections = [];
+
+  const notes = await getRelevantNotesForContext(userText);
+  if (notes.length > 0) {
+    sections.push(`相關記憶：\n${notes.map((n, i) => `${i + 1}. ${n.content}`).join('\n')}`);
+  }
+
+  const { data: todos } = await supabase
+    .from('xlan_todos')
+    .select('text, priority, source_person, project_name, created_at')
+    .eq('done', false)
+    .order('created_at', { ascending: true })
+    .limit(8);
+  if (todos && todos.length > 0) {
+    sections.push(`目前待辦：\n${todos.map((t, i) => {
+      const pri = t.priority && t.priority !== 'normal' ? `/${t.priority}` : '';
+      const owner = t.source_person ? `/${t.source_person}` : '';
+      const proj = t.project_name ? `/${t.project_name}` : '';
+      return `${i + 1}. ${t.text}${pri}${owner}${proj}`;
+    }).join('\n')}`);
+  }
+
+  const { data: payables } = await supabase
+    .from('xlan_payables')
+    .select('title, amount, to_whom, due_date, note')
+    .eq('status', 'pending')
+    .order('due_date', { ascending: true, nullsFirst: false })
+    .limit(5);
+  if (payables && payables.length > 0) {
+    sections.push(`待付款：\n${payables.map((p, i) => {
+      const amount = p.amount ? ` NT$${p.amount}` : '';
+      const due = p.due_date ? ` 到期:${p.due_date}` : '';
+      return `${i + 1}. ${p.title || p.to_whom}${amount}${due}`;
+    }).join('\n')}`);
+  }
+
+  const { data: shipments } = await supabase
+    .from('xlan_shipments')
+    .select('title, expected_date, note')
+    .eq('status', 'pending')
+    .order('expected_date', { ascending: true })
+    .limit(5);
+  if (shipments && shipments.length > 0) {
+    sections.push(`待到貨/陸貨：\n${shipments.map((s, i) => `${i + 1}. ${s.title} 預計:${s.expected_date}`).join('\n')}`);
+  }
+
+  if (sections.length === 0) return '';
+  return `【小瀾可用工作資料】\n${sections.join('\n\n')}`;
+}
+
 // --- Claude API：判斷是否為待辦 ---
 async function judgeTask(messageText) {
   const prompt = `以下是 LINE 群組裡的一則訊息。請判斷這則訊息是否包含交辦給香奈或負責人的待辦事項或需要處理的事情。
@@ -1856,14 +1933,17 @@ function buildConversationContext(context = {}) {
   ].join('\n');
 }
 
-function addContextToUserContent(userContent, context) {
+function addContextToUserContent(userContent, context, knowledgeContext = '') {
   const contextText = buildConversationContext(context);
+  const fullContext = knowledgeContext
+    ? `${contextText}\n\n${knowledgeContext}`
+    : contextText;
   if (typeof userContent === 'string') {
-    return `${contextText}\n\n【香奈訊息】\n${userContent}`;
+    return `${fullContext}\n\n【香奈訊息】\n${userContent}`;
   }
   if (Array.isArray(userContent)) {
     return [
-      { type: 'text', text: contextText },
+      { type: 'text', text: fullContext },
       ...userContent,
     ];
   }
@@ -1882,7 +1962,8 @@ async function chatWithClaude(userId, userContent, context = {}) {
     role: h.role,
     content: h.content,
   }));
-  messages.push({ role: 'user', content: addContextToUserContent(userContent, context) });
+  const knowledgeContext = await buildAgentKnowledgeContext(userContent);
+  messages.push({ role: 'user', content: addContextToUserContent(userContent, context, knowledgeContext) });
 
   let response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
