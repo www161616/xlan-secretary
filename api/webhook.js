@@ -1895,6 +1895,10 @@ function stripGroupCommand(text, command) {
   return String(text || '').replace(new RegExp(`^[#＃]\\s*${command}\\s*`, 'i'), '').trim();
 }
 
+function stripGroupHashTrigger(text) {
+  return String(text || '').replace(/^[#＃]\s*/, '').trim();
+}
+
 // --- 儲存 owner LINE ID ---
 async function saveOwnerLineId(userId) {
   await supabase.from('xlan_kv').upsert({ key: 'owner_line_id', value: userId });
@@ -1910,12 +1914,12 @@ async function handleGroupMessage(event) {
     const text = event.message.text;
     if (!text) return;
 
-    const mentioned = isMentioned(event);
+    const hasHashTrigger = /^[#＃]/.test(text.trim());
     const isTodoCommand = /^[#＃]\s*待辦/.test(text);
 
-    if (mentioned || isTodoCommand) {
+    if (hasHashTrigger) {
       const quotedText = event.message.quotedMessage && event.message.quotedMessage.text;
-      const contentToAnalyze = quotedText || (isTodoCommand ? stripGroupCommand(text, '待辦') : text);
+      const contentToAnalyze = quotedText || (isTodoCommand ? stripGroupCommand(text, '待辦') : stripGroupHashTrigger(text));
       const cleanedText = contentToAnalyze.replace(/@\S+/g, '').trim();
       if (!cleanedText) return;
 
