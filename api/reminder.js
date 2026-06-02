@@ -94,6 +94,37 @@ function formatTodoLine(todo, state) {
   return `${todoStatusIcon(state?.status)} ${pri}${cleanTodoDisplayText(todo.text)}${due}`;
 }
 
+async function buildDailyExpenseCheck(todayStr) {
+  const tomorrow = new Date(`${todayStr}T00:00:00+08:00`);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = getTodayStr(tomorrow);
+  const { data: expenses } = await supabase
+    .from('xlan_expenses')
+    .select('*')
+    .gte('created_at', `${todayStr}T00:00:00+08:00`)
+    .lt('created_at', `${tomorrowStr}T00:00:00+08:00`)
+    .order('created_at', { ascending: false });
+
+  if (!expenses || expenses.length === 0) {
+    return '💰 今日帳務\n今天還沒有記帳。若有現金支出、進貨、匯款，可以直接傳給我記。';
+  }
+
+  const sum = (items, type, account) => items
+    .filter((e) => e.type === type && (!account || e.account === account))
+    .reduce((total, e) => total + Number(e.amount || 0), 0);
+  const income = sum(expenses, 'income');
+  const expense = sum(expenses, 'expense');
+  const personalExpense = sum(expenses, 'expense', 'personal');
+  const businessExpense = sum(expenses, 'expense', 'business');
+  const recent = expenses.slice(0, 3).map((e) => {
+    const account = e.account === 'business' ? '公司' : '私人';
+    const type = e.type === 'income' ? '收入' : '支出';
+    return `- ${account}${type} ${e.category} NT$${e.amount}`;
+  }).join('\n');
+
+  return `💰 今日帳務\n收入：NT$${income}\n支出：NT$${expense}\n私人支出：NT$${personalExpense}\n公司支出：NT$${businessExpense}\n最近：\n${recent}\n\n若分類錯，可回「最近一筆算公司」或「最近一筆分類餐飲」。`;
+}
+
 // 把 "HH:MM" 轉成當天的分鐘數
 function timeToMinutes(timeStr) {
   if (!timeStr) return -1;
@@ -289,7 +320,8 @@ async function checkCustomReminders(now) {
       .filter(t => ['待處理', '進行中', '半完成', '等待回覆', '未完成'].includes(stateMap.get(t.id)?.status || '待處理'))
       .slice(0, 6);
     const items = focus.map((t, i) => `${i + 1}. ${formatTodoLine(t, stateMap.get(t.id))}`).join('\n');
-    return `📋 ${matched.label || matched.message || '提醒'}\n\n目前需要盤點：\n${items || '（無待辦）'}\n\n可回：完成第1項、半完成第1項、等待第1項、延後第1項到明天。`;
+    const expenseCheck = await buildDailyExpenseCheck(getTodayStr(now));
+    return `📋 ${matched.label || matched.message || '提醒'}\n\n目前需要盤點：\n${items || '（無待辦）'}\n\n${expenseCheck}\n\n可回：完成第1項、半完成第1項、等待第1項、延後第1項到明天。`;
   }
 
   // 晚間總結：列出今天完成+未完成
@@ -304,8 +336,9 @@ async function checkCustomReminders(now) {
 
   const doneLines = (doneTodos || []).map(t => `✅ ${t.text}`).join('\n') || '（今天沒有完成項目）';
   const pendingLines = (pendingTodos || []).map((t, i) => `${i + 1}. ${formatTodoLine(t, stateMap.get(t.id))}`).join('\n') || '（全部完成！）';
+  const expenseCheck = await buildDailyExpenseCheck(todayStr);
 
-  return `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n還要追蹤：\n${pendingLines}\n\n可以回：完成第1項、半完成第1項、等待第1項、延後第1項到明天。`;
+  return `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n還要追蹤：\n${pendingLines}\n\n${expenseCheck}\n\n可以回：完成第1項、半完成第1項、等待第1項、延後第1項到明天。`;
 }
 
 // --- 月底財務總結 ---
