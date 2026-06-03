@@ -2846,6 +2846,42 @@ function todoPressureLabel(todo, state = {}, todayStr) {
   return '';
 }
 
+function inferTodoWorkLane(todo) {
+  const raw = `${todo?.text || ''} ${todo?.source_message || ''} ${todo?.project_name || ''}`.toLowerCase();
+  if (/中和|文山|龍潭|林口|永和|平鎮|經國|古華|南平|門市|店/.test(raw)) return '門市';
+  if (/陸貨|1688|集運|叫貨|補貨|進貨|廠商|付款資料|到貨|運單/.test(raw)) return '陸貨/廠商';
+  if (/erp|系統|網站|bug|錯誤|error|webhook|vercel|google sheet|sheet|line bot|機器人/.test(raw)) return '系統';
+  if (/line@|ig|fb|facebook|脆|廣告|文案|招牌|做圖|圖片|照片|拍照/.test(raw)) return '行銷內容';
+  if (/付款|付錢|匯款|帳|記帳|現金流|薪資|應付|應收|發票/.test(raw)) return '帳務';
+  if (/產品|上架|包貨|寄貨|開發|規格|菜單/.test(raw)) return '產品/出貨';
+  if (/員工|排班|請假|人員|教育|回報/.test(raw)) return '人員';
+  return '其他';
+}
+
+function summarizeTodoWorkLanes(todos) {
+  if (!todos || todos.length === 0) return '工作分布：目前沒有未完成待辦。';
+  const laneCounts = new Map();
+  const sourceCounts = new Map();
+  (todos || []).forEach((todo) => {
+    const lane = inferTodoWorkLane(todo);
+    laneCounts.set(lane, (laneCounts.get(lane) || 0) + 1);
+    const source = todo.source_person || todo.project_name || (todo.source_group ? '群組' : '私訊');
+    sourceCounts.set(source, (sourceCounts.get(source) || 0) + 1);
+  });
+  const topLanes = [...laneCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([name, count]) => `${name}${count}件`)
+    .join('、');
+  const topSources = [...sourceCounts.entries()]
+    .filter(([name]) => name && name !== '私訊')
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([name, count]) => `${name}${count}件`)
+    .join('、');
+  return `工作分布：${topLanes || '其他'}。${topSources ? `\n主要來源：${topSources}。` : ''}`;
+}
+
 function todoAgeDays(todo) {
   if (!todo.created_at) return 0;
   return Math.floor((Date.now() - new Date(todo.created_at).getTime()) / 86400000);
@@ -2962,6 +2998,8 @@ async function buildSecretaryBriefingMessages() {
     return `- ${pressure ? `[${pressure}] ` : ''}${formatTodoLine(todo, state)}`;
   };
   const sections = [
+    summarizeTodoWorkLanes(todos),
+    '',
     '今天我會先看這幾件：',
     top.length > 0 ? top.map(line).join('\n') : '目前沒有急件。',
   ];
