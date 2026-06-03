@@ -705,10 +705,11 @@ function buildExpenseCategoryFlex(expenseId) {
 const SYSTEM_PROMPT = `【回覆規則】
 1. 絕對不可以主動說明如何把Bot加進群組
 2. 絕對不可以說「直接把我加進LINE群組就可以了」
-3. 絕對不可以說「對！你說得沒錯」作為開頭
+3. 絕對不可以用「沒錯」「對」「好的」「當然可以」「你說得沒錯」這種寒暄或認同句作為開頭；第一句直接回答問題或給結論
 4. 收到「完成」「已完成」「做好了」「處理好了」這類訊息，如果能從訊息判斷是哪一件待辦，就一定要呼叫 complete_todo 標記完成；不能判斷是哪一件時也要呼叫 complete_todo 並讓系統產生候選卡片
 5. 回覆要簡短直接，不要超過3行，除非用戶需要詳細資訊
 6. LINE 不支援 Markdown，不要使用 **粗體**、反引號、標題符號或 Markdown 連結；網址直接貼純文字。
+7. 香奈問「明天有什麼要做」「今天要做什麼」時，只回答待辦/建議；不要補充 LINE 群組、Webhook、如何使用小瀾等設定說明。
 
 【對話環境規則，最重要】
 - 私訊一對一：香奈是在直接跟你說話，可以自然對話、記錄、查詢、分析、看圖、記帳，不需要 # 關鍵字。
@@ -1203,6 +1204,35 @@ function sanitizeLineText(text) {
     .replace(/\*\*/g, '')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '$1 $2');
+}
+
+function stripOpeningFiller(text) {
+  let cleaned = String(text || '').trim();
+  for (let i = 0; i < 3; i += 1) {
+    cleaned = cleaned.replace(/^(沒錯|對|對啊|是的|好的|好喔|可以|當然可以|了解|明白)[！!，,。.\s]+/u, '').trim();
+    cleaned = cleaned.replace(/^你說得沒錯[！!，,。.\s]+/u, '').trim();
+  }
+  return cleaned;
+}
+
+function userAskedBotSetup(text) {
+  return /(加進|加入|邀請|群組|LINE\s*群|webhook|Webhook|後台|設定|機器人網址|小瀾網址)/i.test(String(text || ''));
+}
+
+function stripUnaskedGroupSetupAdvice(replyText, userText) {
+  if (userAskedBotSetup(userText)) return replyText;
+  const paragraphs = String(replyText || '').split(/\n{2,}/);
+  const kept = paragraphs.filter((paragraph) => !(
+    /(加進|加入|邀請).*(LINE\s*)?群組/i.test(paragraph)
+    || /(LINE\s*)?群組.*(開頭|記錄|使用|設定)/i.test(paragraph)
+    || /webhook|Webhook/i.test(paragraph)
+    || /直接把我加/i.test(paragraph)
+  ));
+  return kept.join('\n\n').trim() || String(replyText || '').trim();
+}
+
+function normalizeClaudeReply(replyText, userText) {
+  return stripOpeningFiller(stripUnaskedGroupSetupAdvice(replyText, userText));
 }
 
 async function replyMessage(replyToken, messages) {
@@ -3362,7 +3392,8 @@ async function chatWithClaude(userId, userContent, context = {}) {
   }
 
   const textBlock = response.content.find((b) => b.type === 'text');
-  const reply = textBlock ? textBlock.text : '已處理完成！';
+  const rawReply = textBlock ? textBlock.text : '已處理完成！';
+  const reply = normalizeClaudeReply(rawReply, userMessageText);
 
   await supabase.from('xlan_conversations').insert([
     { user_id: userId, role: 'user', content: userMessageText },
