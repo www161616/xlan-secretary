@@ -197,6 +197,52 @@ function summarizeTodoWorkLanes(todos) {
   return `工作分布：${topLanes || '其他'}。${topSources ? `\n主要來源：${topSources}。` : ''}`;
 }
 
+function buildTodoRecommendation(todos, stateMap, todayStr) {
+  if (!todos || todos.length === 0) return '建議：目前沒有待辦壓力，可以先整理帳務或補記資料。';
+
+  const laneScores = new Map();
+  let overdueCount = 0;
+  let dueTodayCount = 0;
+  let urgentCount = 0;
+  let halfDoneCount = 0;
+  let waitingCount = 0;
+
+  (todos || []).forEach((todo) => {
+    const state = stateMap.get(todo.id) || {};
+    const lane = inferTodoWorkLane(todo);
+    let score = 1;
+    if (todo.priority === 'urgent') {
+      urgentCount += 1;
+      score += 5;
+    }
+    if (state.due_date && state.due_date < todayStr) {
+      overdueCount += 1;
+      score += 7;
+    } else if (state.due_date === todayStr) {
+      dueTodayCount += 1;
+      score += 5;
+    }
+    if (state.status === '半完成') {
+      halfDoneCount += 1;
+      score += 3;
+    }
+    if (state.status === '等待回覆') {
+      waitingCount += 1;
+      score += 1;
+    }
+    if (todoAgeDays(todo) >= 3) score += 2;
+    laneScores.set(lane, (laneScores.get(lane) || 0) + score);
+  });
+
+  const topLane = [...laneScores.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '待辦';
+  if (overdueCount > 0) return `建議：先處理逾期的${topLane}，逾期會拖到後面所有安排。`;
+  if (urgentCount > 0) return `建議：先處理緊急的${topLane}，再回頭清半完成事項。`;
+  if (dueTodayCount > 0) return `建議：今天到期的${topLane}先收掉，不要讓它變成明天的逾期。`;
+  if (halfDoneCount > 0) return `建議：先把半完成的${topLane}收尾，會比開新工作更快看到進度。`;
+  if (waitingCount > 0) return `建議：先追等待回覆的${topLane}，只要補一句訊息就能推進。`;
+  return `建議：目前最集中的工作是${topLane}，先挑一件 15 分鐘內能推進的處理。`;
+}
+
 function buildReminderTodoFlex(todos, stateMap = new Map()) {
   const bubbles = (todos || []).slice(0, 10).map((todo, i) => {
     const n = i + 1;
@@ -541,9 +587,10 @@ async function checkCustomReminders(now) {
     const items = focus.map((t, i) => `${i + 1}. ${formatTodoLine(t, stateMap.get(t.id))}`).join('\n');
     const pressure = summarizeTodoPressure(todos || [], stateMap, todayStr);
     const workload = summarizeTodoWorkLanes(todos || []);
+    const recommendation = buildTodoRecommendation(todos || [], stateMap, todayStr);
     const expenseCheck = await buildDailyExpenseCheck(todayStr);
     const messages = [
-      { type: 'text', text: `📋 ${matched.label || matched.message || '提醒'}\n\n${workload}\n\n${pressure}\n\n目前需要先看：\n${items || '（無待辦）'}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
+      { type: 'text', text: `📋 ${matched.label || matched.message || '提醒'}\n\n${workload}\n${recommendation}\n\n${pressure}\n\n目前需要先看：\n${items || '（無待辦）'}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
     ];
     const todoFlex = buildReminderTodoFlex(focus, stateMap);
     if (todoFlex) messages.push(todoFlex);
@@ -567,10 +614,11 @@ async function checkCustomReminders(now) {
   const pendingLines = sortedPending.map((t, i) => `${i + 1}. ${formatTodoLine(t, stateMap.get(t.id))}`).join('\n') || '（全部完成！）';
   const pressure = summarizeTodoPressure(pendingTodos || [], stateMap, todayStr);
   const workload = summarizeTodoWorkLanes(pendingTodos || []);
+  const recommendation = buildTodoRecommendation(pendingTodos || [], stateMap, todayStr);
   const expenseCheck = await buildDailyExpenseCheck(todayStr);
 
   const messages = [
-    { type: 'text', text: `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n${workload}\n\n${pressure}\n\n還要追蹤：\n${pendingLines}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
+    { type: 'text', text: `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n${workload}\n${recommendation}\n\n${pressure}\n\n還要追蹤：\n${pendingLines}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
   ];
   const todoFlex = buildReminderTodoFlex(sortedPending, stateMap);
   if (todoFlex) messages.push(todoFlex);

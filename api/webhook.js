@@ -2882,6 +2882,52 @@ function summarizeTodoWorkLanes(todos) {
   return `工作分布：${topLanes || '其他'}。${topSources ? `\n主要來源：${topSources}。` : ''}`;
 }
 
+function buildTodoRecommendation(todos, stateMap, todayStr) {
+  if (!todos || todos.length === 0) return '建議：目前沒有待辦壓力，可以先整理帳務或補記資料。';
+
+  const laneScores = new Map();
+  let overdueCount = 0;
+  let dueTodayCount = 0;
+  let urgentCount = 0;
+  let halfDoneCount = 0;
+  let waitingCount = 0;
+
+  (todos || []).forEach((todo) => {
+    const state = stateMap.get(todo.id) || {};
+    const lane = inferTodoWorkLane(todo);
+    let score = 1;
+    if (todo.priority === 'urgent') {
+      urgentCount += 1;
+      score += 5;
+    }
+    if (state.due_date && state.due_date < todayStr) {
+      overdueCount += 1;
+      score += 7;
+    } else if (state.due_date === todayStr) {
+      dueTodayCount += 1;
+      score += 5;
+    }
+    if (state.status === '半完成') {
+      halfDoneCount += 1;
+      score += 3;
+    }
+    if (state.status === '等待回覆') {
+      waitingCount += 1;
+      score += 1;
+    }
+    if (todoAgeDays(todo) >= 3) score += 2;
+    laneScores.set(lane, (laneScores.get(lane) || 0) + score);
+  });
+
+  const topLane = [...laneScores.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '待辦';
+  if (overdueCount > 0) return `建議：先處理逾期的${topLane}，逾期會拖到後面所有安排。`;
+  if (urgentCount > 0) return `建議：先處理緊急的${topLane}，再回頭清半完成事項。`;
+  if (dueTodayCount > 0) return `建議：今天到期的${topLane}先收掉，不要讓它變成明天的逾期。`;
+  if (halfDoneCount > 0) return `建議：先把半完成的${topLane}收尾，會比開新工作更快看到進度。`;
+  if (waitingCount > 0) return `建議：先追等待回覆的${topLane}，只要補一句訊息就能推進。`;
+  return `建議：目前最集中的工作是${topLane}，先挑一件 15 分鐘內能推進的處理。`;
+}
+
 function todoAgeDays(todo) {
   if (!todo.created_at) return 0;
   return Math.floor((Date.now() - new Date(todo.created_at).getTime()) / 86400000);
@@ -2999,6 +3045,7 @@ async function buildSecretaryBriefingMessages() {
   };
   const sections = [
     summarizeTodoWorkLanes(todos),
+    buildTodoRecommendation(todos, stateMap, todayStr),
     '',
     '今天我會先看這幾件：',
     top.length > 0 ? top.map(line).join('\n') : '目前沒有急件。',
