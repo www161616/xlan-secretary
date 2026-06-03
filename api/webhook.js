@@ -364,6 +364,108 @@ async function resolveFocusedExpenseReply(text, sourceKey) {
   return null;
 }
 
+function inferExpenseCategory(text, type = 'expense') {
+  const raw = String(text || '');
+  if (type === 'income') {
+    if (/貨款|營收|收入|收款/.test(raw)) return '業務收入';
+    if (/退款|退費/.test(raw)) return '其他';
+    return '業務收入';
+  }
+  if (/早餐|午餐|晚餐|飲料|餐|便當|咖啡/.test(raw)) return '餐飲';
+  if (/車資|油|加油|停車|高鐵|火車|計程車|uber|運費/.test(raw)) return '交通';
+  if (/進貨|採購|貨款|廠商/.test(raw)) return '進貨';
+  if (/門市|店租|店/.test(raw)) return '門市';
+  if (/薪資|薪水|工資/.test(raw)) return '薪資';
+  if (/水電|電費|水費|瓦斯|網路|電話/.test(raw)) return '水電';
+  if (/醫療|看醫生|藥/.test(raw)) return '醫療';
+  if (/娛樂|電影|遊戲/.test(raw)) return '娛樂';
+  if (/買|購物/.test(raw)) return '購物';
+  return '其他';
+}
+
+function parseSimpleExpenseText(text) {
+  const raw = String(text || '').trim();
+  if (!raw || raw.length > 48 || /https?:\/\//i.test(raw)) return null;
+  if (/(多少|幾筆|摘要|帳務|收支|查詢|清單|網址|系統|運單|單號)/.test(raw)) return null;
+  if (/(月薪|薪資承諾|薪水承諾)/.test(raw)) return null;
+
+  const amountMatch = raw.match(/(?:NT\$?|[$＄])?\s*(\d{1,3}(?:,\d{3})+|\d+)(?:\s*元)?/i);
+  if (!amountMatch) return null;
+  const amount = Number(String(amountMatch[1]).replace(/,/g, ''));
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+
+  const hasIncomeSignal = /(收入|收款|收到|入帳|營收|貨款|退款|退費)/.test(raw);
+  const hasExpenseSignal = /(花|買|付款|付|支出|消費|刷卡|匯款|繳|進貨|採購|早餐|午餐|晚餐|飲料|餐|停車|加油|車資|運費|包材|水電|房租|店租|付薪資|發薪資|薪資支出)/.test(raw);
+  if (!hasIncomeSignal && !hasExpenseSignal) return null;
+
+  const type = hasIncomeSignal && !/(付款|付|支出|花|買|進貨|採購)/.test(raw) ? 'income' : 'expense';
+  const category = inferExpenseCategory(raw, type);
+  const account = /(進貨|廠商|貨款|門市|包材|薪資|水電|房租|店租|運費|業務|公司)/.test(raw)
+    ? 'business'
+    : 'personal';
+  const note = raw.replace(amountMatch[0], '').replace(/元/g, '').trim() || raw;
+  return { amount, category, note, type, account };
+}
+
+async function handleSimpleExpenseText(text, focusKey = '') {
+  const parsed = parseSimpleExpenseText(text);
+  if (!parsed) return null;
+  const savedExpense = await saveExpense(parsed);
+  await saveExpenseFocus(focusKey, savedExpense);
+  const flex = buildExpenseFlexMessage({
+    id: savedExpense.id,
+    amount: parsed.amount,
+    category: parsed.category,
+    note: parsed.note,
+    type: parsed.type,
+    account: parsed.account,
+    label: '快速記帳',
+  });
+  const accountLabel = parsed.account === 'business' ? '公司' : '私人';
+  return [
+    { type: 'text', text: `已記帳：${parsed.type === 'income' ? '收入' : '支出'} ${parsed.category} NT$${parsed.amount}（${accountLabel}）` },
+    flex,
+  ];
+}
+
+function classifyTextIntent(text, context = {}) {
+  const raw = String(text || '').trim();
+  const mode = context.mode || 'direct';
+  if (!raw) return { intent: 'empty', confidence: 1, route: 'ignore', reason: 'empty_text' };
+
+  if (mode === 'group' && !/^[#＃]/.test(raw) && !context.cleaned) {
+    return { intent: 'group_noise', confidence: 1, route: 'ignore', reason: 'group_without_hash' };
+  }
+
+  if (isStaffReportTrigger(raw)) return { intent: 'staff_report', confidence: 1, route: 'staff_report', reason: 'staff_report_trigger' };
+  if (/^待辦:[0-9a-f-]{32,36}:/i.test(raw)) return { intent: 'todo_action', confidence: 1, route: 'fast', reason: 'todo_callback' };
+  if (/^記帳:[0-9a-f-]+:/i.test(raw)) return { intent: 'expense_action', confidence: 1, route: 'fast', reason: 'expense_callback' };
+  if (/^(待辦|清單|檢查待辦|任務清單)$/.test(raw)) return { intent: 'todo_list', confidence: 1, route: 'fast', reason: 'todo_list_command' };
+  if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(raw)) {
+    return { intent: 'briefing', confidence: 1, route: 'fast', reason: 'briefing_command' };
+  }
+  if (/^(工作報告|今天報告|今日報告|本週報告|這週報告|週報)$/.test(raw)) return { intent: 'work_report', confidence: 1, route: 'fast', reason: 'work_report_command' };
+  if (parseNaturalTodoAction(raw)) return { intent: 'todo_update', confidence: 0.95, route: 'fast', reason: 'natural_todo_action' };
+  if (parseSimpleExpenseText(raw)) return { intent: 'expense_save', confidence: 0.9, route: 'fast', reason: 'simple_expense' };
+  if (/^(本月記帳摘要|本月帳務|本月收支|這個月帳務|這個月花多少|今天記帳摘要|今天帳務|今天收支|今天花多少|今天花了多少|今日帳務|本週記帳摘要|本週帳務|本週收支|這週帳務|這週花多少)$/.test(raw)) {
+    return { intent: 'expense_query', confidence: 1, route: 'fast', reason: 'expense_query_command' };
+  }
+  if (/(改成|改為|更新成|更新為|換成|換為).*(https?:\/\/)|https?:\/\/.*(改成|改為|更新成|更新為|換成|換為)/i.test(raw)) {
+    return { intent: 'memory_update', confidence: 0.9, route: 'memory', reason: 'url_update' };
+  }
+  if (/(不用記了|不用記|不要記了|不要記|刪掉|刪除|忘掉|忘記)/.test(raw) && /(網址|網站|筆記|資料|電話|系統|承諾|規格|帳號|密碼)/.test(raw)) {
+    return { intent: 'memory_delete', confidence: 0.85, route: 'memory', reason: 'memory_delete' };
+  }
+  if (/https?:\/\//i.test(raw)) return { intent: 'memory_save', confidence: 0.85, route: 'memory', reason: 'url_save' };
+  if (/網址|網站|連結|link|url/i.test(raw)) return { intent: 'memory_query', confidence: 0.75, route: 'memory', reason: 'url_query' };
+  if (/(提醒|每天\d{1,2}點|[0-9一二三四五六七八九十]+點叫我)/.test(raw)) return { intent: 'reminder', confidence: 0.75, route: 'claude_tool', reason: 'reminder_language' };
+  if (/(幫我|記得|提醒我|確認|處理|安排|通知|打電話|問|追|做|買|付款|上架|拍照)/.test(raw)) {
+    return { intent: 'todo_or_tool', confidence: 0.65, route: 'claude_tool', reason: 'action_language' };
+  }
+  if (/[?？]|怎麼|為什麼|可以嗎|是多少|查一下|分析|建議/.test(raw)) return { intent: 'question', confidence: 0.65, route: 'claude', reason: 'question_language' };
+  return { intent: 'chat', confidence: 0.45, route: 'claude', reason: 'fallback' };
+}
+
 // --- LINE 下載圖片 ---
 async function downloadLineImage(messageId) {
   const buffer = await downloadLineImageBuffer(messageId);
@@ -3002,14 +3104,18 @@ async function handleToolUse(block, userMessage, context = {}) {
 function buildConversationContext(context = {}) {
   const mode = context.mode === 'group' ? '群組' : '私訊一對一';
   const trigger = context.trigger || (context.mode === 'group' ? '#' : '無需關鍵字');
-  return [
+  const lines = [
     '【目前對話環境】',
     `位置：${mode}`,
     `觸發方式：${trigger}`,
     context.mode === 'group'
       ? '規則：這是群組中的明確 # 指令，只處理本次指令；不要處理其他沒有 # 的聊天內容。'
       : '規則：這是香奈與小瀾的一對一私訊，可以自然對話、記錄、查詢、分析與看圖。',
-  ].join('\n');
+  ];
+  if (context.intent) {
+    lines.push(`系統初判意圖：${context.intent.intent} / 信心：${context.intent.confidence} / 路由：${context.intent.route} / 原因：${context.intent.reason}`);
+  }
+  return lines.join('\n');
 }
 
 function addContextToUserContent(userContent, context, knowledgeContext = '') {
@@ -3749,6 +3855,8 @@ async function handleGroupMessage(event) {
         if (isTodoCommand) await replyMessage(event.replyToken, await listTodoReplyMessages(focusKey));
         return;
       }
+      const intent = classifyTextIntent(cleanedText, { mode: 'group', cleaned: true });
+      console.log('intent_router', { mode: 'group', ...intent, text: cleanedText.slice(0, 40) });
 
       if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(cleanedText)) {
         await replyMessage(event.replyToken, await buildSecretaryBriefingMessages(focusKey));
@@ -3758,6 +3866,12 @@ async function handleGroupMessage(event) {
       if (/^(工作報告|今天報告|今日報告|本週報告|這週報告|週報)$/.test(cleanedText)) {
         const period = /本週|這週|週報/.test(cleanedText) ? 'this_week' : 'today';
         await replyMessage(event.replyToken, await buildWorkReportMessages(period, focusKey));
+        return;
+      }
+
+      const simpleExpenseReply = await handleSimpleExpenseText(cleanedText, focusKey);
+      if (simpleExpenseReply) {
+        await replyMessage(event.replyToken, simpleExpenseReply);
         return;
       }
 
@@ -3787,6 +3901,7 @@ async function handleGroupMessage(event) {
         mode: 'group',
         trigger: '#',
         focusKey,
+        intent,
       });
       const messages = [];
       if (flexMessages.length > 0) messages.push(...flexMessages);
@@ -3823,6 +3938,10 @@ async function handleDirectFastCommand(text, focusKey = '') {
   if (/^最近一筆分類(.+)$/.test(text)) {
     const match = text.match(/^最近一筆分類(.+)$/);
     return [{ type: 'text', text: await updateLatestExpenseCategory(match[1].trim()) }];
+  }
+  const simpleExpenseReply = await handleSimpleExpenseText(text, focusKey);
+  if (simpleExpenseReply) {
+    return simpleExpenseReply;
   }
   if (/^(本月記帳摘要|本月帳務|本月收支|這個月帳務|這個月花多少)$/.test(text)) {
     return buildExpenseSummaryReplyMessages('this_month', focusKey);
@@ -3962,9 +4081,12 @@ async function handleDirectMessage(event) {
   const text = (event.message.text || '').trim();
   if (!text) return;
 
+  const intent = classifyTextIntent(text, { mode: 'direct' });
+  console.log('intent_router', { mode: 'direct', ...intent, text: text.slice(0, 40) });
+
   const fastReplyMessages = await handleDirectFastCommand(text, focusKey);
   if (fastReplyMessages) {
-    console.log('direct_fast_path', { text: text.slice(0, 24) });
+    console.log('direct_fast_path', { intent: intent.intent, reason: intent.reason, text: text.slice(0, 24) });
     await replyMessage(event.replyToken, fastReplyMessages);
     return;
   }
@@ -4057,6 +4179,7 @@ async function handleDirectMessage(event) {
       mode: 'direct',
       trigger: '私訊文字',
       focusKey,
+      intent,
     });
     replyMessages = [];
     if (flexMessages.length > 0) replyMessages.push(...flexMessages);
