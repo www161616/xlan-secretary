@@ -50,6 +50,15 @@ body { font-family:-apple-system,'Segoe UI',sans-serif; background:#f5f0ff; colo
 .todo-text { flex:1; font-size:15px; line-height:1.4; color:#3d3552; }
 .todo-meta { font-size:11px; color:#a09ab0; margin-top:4px; }
 .todo-del { color:#c4bdd4; font-size:22px; cursor:pointer; padding:4px; }
+.pill-row { display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch; margin-bottom:12px; padding-bottom:2px; }
+.pill-row::-webkit-scrollbar { display:none; }
+.status-chip { flex:0 0 auto; border:1px solid #d4c8e8; background:#fff; color:#7b6a92; border-radius:999px; padding:7px 10px; font-size:12px; cursor:pointer; }
+.status-chip.active { background:#9b6dff; border-color:#9b6dff; color:#fff; }
+.todo-status { display:inline-flex; align-items:center; gap:4px; border-radius:999px; background:#f4efff; color:#7656b7; padding:2px 8px; font-size:11px; margin-right:6px; }
+.todo-status.waiting { background:#eef5ff; color:#2563eb; }
+.todo-status.half { background:#fff4e5; color:#b45309; }
+.todo-status.bad { background:#f3f4f6; color:#374151; }
+.meta-pill { display:inline-flex; border-radius:999px; background:#f6f2ff; color:#8b7aa8; padding:2px 7px; font-size:11px; margin-right:4px; margin-top:4px; }
 
 /* Collapsible */
 .collapse-header { display:flex; align-items:center; gap:8px; padding:12px 0; color:#8b8b9e; font-size:13px; cursor:pointer; }
@@ -85,6 +94,11 @@ body { font-family:-apple-system,'Segoe UI',sans-serif; background:#f5f0ff; colo
 .exp-left { flex:1; }
 .exp-cat { font-size:14px; font-weight:500; color:#3d3552; }
 .exp-note { font-size:12px; color:#a09ab0; margin-top:2px; }
+.exp-tags { display:flex; gap:5px; flex-wrap:wrap; margin-top:5px; }
+.exp-tag { border-radius:999px; background:#f4efff; color:#7656b7; padding:2px 7px; font-size:10px; }
+.exp-tag.business { background:#eef5ff; color:#2563eb; }
+.exp-tag.income { background:#ecfdf5; color:#16a34a; }
+.exp-tag.expense { background:#fff1f2; color:#e11d48; }
 .exp-right { text-align:right; }
 .exp-amt { font-size:16px; font-weight:700; }
 .exp-date { font-size:11px; color:#a09ab0; margin-top:2px; }
@@ -132,6 +146,14 @@ body { font-family:-apple-system,'Segoe UI',sans-serif; background:#f5f0ff; colo
   <!-- 待辦 -->
   <div id="page-todos" class="page active">
     <div class="page-title" style="justify-content:space-between;"><div>待辦清單 <span class="badge" id="todo-badge">0</span></div><button class="btn btn-sm btn-outline" onclick="exportTodos()">CSV</button></div>
+    <div class="pill-row" id="todo-status-tabs">
+      <button class="status-chip active" onclick="switchTodoStatus('all')">全部</button>
+      <button class="status-chip" onclick="switchTodoStatus('待處理')">待處理</button>
+      <button class="status-chip" onclick="switchTodoStatus('進行中')">進行中</button>
+      <button class="status-chip" onclick="switchTodoStatus('半完成')">半完成</button>
+      <button class="status-chip" onclick="switchTodoStatus('等待回覆')">等待回覆</button>
+      <button class="status-chip" onclick="switchTodoStatus('未完成')">未完成</button>
+    </div>
     <div id="todo-pending"></div>
     <div class="collapse-header" id="done-header" onclick="toggleDone()">
       <span class="arrow">&#9654;</span> 已完成
@@ -296,25 +318,77 @@ function switchPage(name) {
 }
 
 // --- Todos ---
+let todoStatusFilter = 'all';
+
+function parseTodoStateValue(value) {
+  if (!value) return {};
+  try { return JSON.parse(value); } catch(e) { return {}; }
+}
+function inferTodoStateFromText(text) {
+  const raw = String(text || '');
+  const status = (raw.match(/^\[(進行中|半完成|未完成|等待回覆|待處理)\]\s*/) || [])[1] || '待處理';
+  const due = (raw.match(/^\[延後到 ([^\]]+)\]\s*/) || [])[1] || null;
+  return { status, due_date: due };
+}
+function cleanTodoText(text) {
+  return String(text || '')
+    .replace(/^\[延後到 [^\]]+\]\s*/, '')
+    .replace(/^\[(進行中|半完成|未完成|等待回覆|待處理)\]\s*/, '');
+}
+function todoStatusIcon(status) {
+  return ({待處理:'⚪',進行中:'🟡',半完成:'🟠',等待回覆:'🔵',未完成:'⚫'})[status || '待處理'] || '⚪';
+}
+function todoStatusClass(status) {
+  if (status === '等待回覆') return 'waiting';
+  if (status === '半完成') return 'half';
+  if (status === '未完成') return 'bad';
+  return '';
+}
+async function loadTodoStateMap() {
+  const rows = await api('/xlan_kv?select=key,value&limit=1000');
+  const map = {};
+  (rows || []).forEach(r => {
+    if (!String(r.key || '').startsWith('todo_state:')) return;
+    map[String(r.key).replace('todo_state:', '')] = parseTodoStateValue(r.value);
+  });
+  return map;
+}
+function getTodoState(todo, stateMap) {
+  return { ...inferTodoStateFromText(todo.text), ...(stateMap[todo.id] || {}) };
+}
+function switchTodoStatus(status) {
+  todoStatusFilter = status;
+  document.querySelectorAll('#todo-status-tabs .status-chip').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent === status || (status === 'all' && btn.textContent === '全部'));
+  });
+  loadTodos();
+}
 async function loadTodos() {
   const data = await api('/xlan_todos?order=created_at.asc&limit=200');
+  const stateMap = await loadTodoStateMap();
   const pending = data.filter(t=>!t.done);
   const done = data.filter(t=>t.done).slice(-20).reverse();
   document.getElementById('todo-badge').textContent = pending.length;
+  const visiblePending = todoStatusFilter === 'all'
+    ? pending
+    : pending.filter(t => getTodoState(t, stateMap).status === todoStatusFilter);
 
-  const urgent = pending.filter(t=>t.priority==='urgent');
-  const important = pending.filter(t=>t.priority==='important');
-  const normal = pending.filter(t=>!t.priority||t.priority==='normal');
+  const urgent = visiblePending.filter(t=>t.priority==='urgent');
+  const important = visiblePending.filter(t=>t.priority==='important');
+  const normal = visiblePending.filter(t=>!t.priority||t.priority==='normal');
 
   function renderGroup(label, items, color) {
     if (items.length===0) return '';
     return `<div style="font-size:13px;font-weight:600;color:${color};padding:8px 0 4px;">${label}（${items.length}）</div>`+
       items.map(t=>{
+        const state = getTodoState(t, stateMap);
         const src = t.source_person ? `<span style="color:#9b6dff;">[${esc(t.source_person)}]</span> ` : '';
+        const status = `<span class="todo-status ${todoStatusClass(state.status)}">${todoStatusIcon(state.status)} ${esc(state.status || '待處理')}</span>`;
+        const due = state.due_date ? `<span class="meta-pill">延後到 ${esc(state.due_date)}</span>` : '';
         return `<div class="card card-shadow" style="margin-bottom:8px;border-left:3px solid ${color};">
           <div class="todo-card">
             <div class="todo-check" onclick="toggleTodo('${t.id}',true)"></div>
-            <div class="todo-text">${src}${esc(t.text)}<div class="todo-meta">${t.source_group?'群組':'私訊'} &middot; ${fmtDate(t.created_at)}</div></div>
+            <div class="todo-text">${status}${src}${esc(cleanTodoText(t.text))}<div class="todo-meta">${due}<span class="meta-pill">${t.source_group?'群組':'私訊'}</span><span class="meta-pill">${fmtDate(t.created_at)}</span></div></div>
             <div class="todo-del" onclick="delTodo('${t.id}')">&times;</div>
           </div>
         </div>`;
@@ -342,11 +416,13 @@ function toggleDone() {
 
 async function toggleTodo(id, done) {
   await api('/xlan_todos?id=eq.'+id, { method:'PATCH', body:JSON.stringify({ done, done_at:new Date().toISOString() }) });
+  if (done) await api('/xlan_kv?key=eq.'+encodeURIComponent('todo_state:'+id), { method:'DELETE' });
   loadTodos();
 }
 async function delTodo(id) {
   if (!confirm('確定刪除？')) return;
   await api('/xlan_todos?id=eq.'+id, { method:'DELETE' });
+  await api('/xlan_kv?key=eq.'+encodeURIComponent('todo_state:'+id), { method:'DELETE' });
   loadTodos();
 }
 
@@ -396,8 +472,12 @@ function renderExpenses() {
   document.getElementById('exp-list').innerHTML = filtered.map(e=>{
     const color = e.type==='income'?'#4ade80':'#f87171';
     const sign = e.type==='income'?'+':'-';
+    const accountLabel = e.account==='business'?'公司':'私人';
+    const typeLabel = e.type==='income'?'收入':'支出';
     return `<div class="exp-item">
-      <div class="exp-left"><div class="exp-cat">${esc(e.category)}</div><div class="exp-note">${esc(e.note||'')}</div></div>
+      <div class="exp-left"><div class="exp-cat">${esc(e.category)}</div>
+        <div class="exp-tags"><span class="exp-tag ${e.account==='business'?'business':''}">${accountLabel}</span><span class="exp-tag ${e.type}">${typeLabel}</span></div>
+        <div class="exp-note">${esc(e.note||'')}</div></div>
       <div class="exp-right"><div class="exp-amt" style="color:${color}">${sign}$${e.amount.toLocaleString()}</div><div class="exp-date">${fmtDate(e.created_at)}</div></div>
     </div>`;
   }).join('') || '<div class="empty">無記錄</div>';
@@ -405,9 +485,9 @@ function renderExpenses() {
 function exportCSV() {
   const filtered = expData.filter(e=>e.account===expAccount);
   if (!filtered.length) return alert('無資料');
-  let csv = '\uFEFF時間,類別,備註,類型,金額\n';
+  let csv = '\uFEFF時間,帳別,類別,備註,類型,金額\n';
   filtered.forEach(e=>{
-    csv += fmtDate(e.created_at)+','+e.category+','+(e.note||'').replace(/,/g,'，')+','+(e.type==='income'?'收入':'支出')+','+e.amount+'\n';
+    csv += fmtDate(e.created_at)+','+(e.account==='business'?'公司':'私人')+','+e.category+','+(e.note||'').replace(/,/g,'，')+','+(e.type==='income'?'收入':'支出')+','+e.amount+'\n';
   });
   const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
   const a = document.createElement('a');
@@ -718,11 +798,13 @@ async function fixBug(id) {
 // --- Export ---
 async function exportTodos() {
   const data = await api('/xlan_todos?done=eq.false&order=created_at.asc');
+  const stateMap = await loadTodoStateMap();
   if (!data.length) return alert('無資料');
-  let csv = '\uFEFF建立時間,內容,優先度,來源,狀態\n';
+  let csv = '\uFEFF建立時間,內容,優先度,來源,小瀾狀態,延後日期\n';
   data.forEach(t=>{
     const pri = {urgent:'緊急',important:'重要',normal:'一般'}[t.priority||'normal'];
-    csv += fmtDate(t.created_at)+','+t.text.replace(/,/g,'，')+','+pri+','+(t.source_person||'')+',未完成\n';
+    const state = getTodoState(t, stateMap);
+    csv += fmtDate(t.created_at)+','+cleanTodoText(t.text).replace(/,/g,'，')+','+pri+','+(t.source_person||'')+','+(state.status||'待處理')+','+(state.due_date||'')+'\n';
   });
   const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
   const a = document.createElement('a');
