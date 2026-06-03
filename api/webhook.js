@@ -3399,6 +3399,88 @@ async function handleGroupMessage(event) {
   }
 }
 
+async function handleDirectFastCommand(text) {
+  if (/^記帳:([0-9a-f-]+):分類:(.+)$/.test(text)) {
+    const match = text.match(/^記帳:([0-9a-f-]+):分類:(.+)$/);
+    return [{ type: 'text', text: await updateExpenseCategory(match[1], match[2].trim()) }];
+  }
+  if (/^記帳:([0-9a-f-]+):(公司|私人|刪除|分類)$/.test(text)) {
+    const match = text.match(/^記帳:([0-9a-f-]+):(公司|私人|刪除|分類)$/);
+    const expenseId = match[1];
+    const action = match[2];
+    if (action === '分類') return [buildExpenseCategoryFlex(expenseId)];
+    if (action === '刪除') return [{ type: 'text', text: await deleteExpense(expenseId) }];
+    return [{ type: 'text', text: await updateExpenseAccount(expenseId, action === '公司' ? 'business' : 'personal') }];
+  }
+  if (/^最近一筆算(公司|私人)$/.test(text)) {
+    const match = text.match(/^最近一筆算(公司|私人)$/);
+    return [{ type: 'text', text: await updateLatestExpenseAccount(match[1] === '公司' ? 'business' : 'personal') }];
+  }
+  if (/^刪除最近一筆記帳$/.test(text)) {
+    return [{ type: 'text', text: await deleteLatestExpense() }];
+  }
+  if (/^最近一筆分類$/.test(text)) {
+    const latest = await getLatestExpense();
+    return latest ? [buildExpenseCategoryFlex(latest.id)] : [{ type: 'text', text: '找不到最近一筆記帳。' }];
+  }
+  if (/^最近一筆分類(.+)$/.test(text)) {
+    const match = text.match(/^最近一筆分類(.+)$/);
+    return [{ type: 'text', text: await updateLatestExpenseCategory(match[1].trim()) }];
+  }
+  if (/^(本月記帳摘要|本月帳務|本月收支|這個月帳務|這個月花多少)$/.test(text)) {
+    return buildExpenseSummaryReplyMessages('this_month');
+  }
+  if (/^(今天記帳摘要|今天帳務|今天收支|今天花多少|今天花了多少|今日帳務)$/.test(text)) {
+    return buildExpenseSummaryReplyMessages('today');
+  }
+  if (/^(本週記帳摘要|本週帳務|本週收支|這週帳務|這週花多少)$/.test(text)) {
+    return buildExpenseSummaryReplyMessages('this_week');
+  }
+  if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(text)) {
+    return buildSecretaryBriefingMessages();
+  }
+  if (/^(工作報告|今天報告|今日報告|本週報告|這週報告|週報)$/.test(text)) {
+    const period = /本週|這週|週報/.test(text) ? 'this_week' : 'today';
+    return buildWorkReportMessages(period);
+  }
+  if (/^(待辦|清單|檢查待辦|任務清單)$/.test(text)) {
+    return listTodoReplyMessages();
+  }
+  if (/^待辦:[0-9a-f-]{32,36}:/i.test(text)) {
+    const result = await handleTodoActionCommand(text);
+    return [{ type: 'text', text: result || '這個待辦操作格式不正確。' }];
+  }
+  if (/^完成第(\d+)項$/.test(text)) {
+    const match = text.match(/^完成第(\d+)項$/);
+    return [{ type: 'text', text: await completeTodo(parseInt(match[1], 10)) }];
+  }
+  if (/^(進行中|半完成)第(\d+)項$/.test(text)) {
+    const match = text.match(/^(進行中|半完成)第(\d+)項$/);
+    return [{ type: 'text', text: await markTodoStatus(parseInt(match[2], 10), match[1] === '半完成' ? '半完成' : '進行中') }];
+  }
+  if (/^(等待|等回覆|等待回覆)第(\d+)項$/.test(text)) {
+    const match = text.match(/^(等待|等回覆|等待回覆)第(\d+)項$/);
+    return [{ type: 'text', text: await markTodoStatus(parseInt(match[2], 10), '等待回覆') }];
+  }
+  if (/^未完成第(\d+)項$/.test(text)) {
+    const match = text.match(/^未完成第(\d+)項$/);
+    return [{ type: 'text', text: await markTodoStatus(parseInt(match[1], 10), '未完成') }];
+  }
+  if (/^刪除第(\d+)項$/.test(text)) {
+    const match = text.match(/^刪除第(\d+)項$/);
+    return [{ type: 'text', text: await deleteTodo(parseInt(match[1], 10)) }];
+  }
+  if (/^延後第(\d+)項到(.+)$/.test(text)) {
+    const match = text.match(/^延後第(\d+)項到(.+)$/);
+    return [{ type: 'text', text: await postponeTodo(parseInt(match[1], 10), match[2]) }];
+  }
+  if (/^第(\d+)項延後到(.+)$/.test(text)) {
+    const match = text.match(/^第(\d+)項延後到(.+)$/);
+    return [{ type: 'text', text: await postponeTodo(parseInt(match[1], 10), match[2]) }];
+  }
+  return null;
+}
+
 // --- 私訊處理 ---
 async function handleDirectMessage(event) {
   const msgType = event.message.type;
@@ -3467,6 +3549,13 @@ async function handleDirectMessage(event) {
 
   const text = (event.message.text || '').trim();
   if (!text) return;
+
+  const fastReplyMessages = await handleDirectFastCommand(text);
+  if (fastReplyMessages) {
+    console.log('direct_fast_path', { text: text.slice(0, 24) });
+    await replyMessage(event.replyToken, fastReplyMessages);
+    return;
+  }
 
   let replyMessages;
   const updatedUrlMemory = await updateUrlMemoryFromText(text);
