@@ -2356,7 +2356,9 @@ function parseNaturalTodoAction(text) {
 }
 
 // --- 處理 tool use 結果 ---
-async function handleToolUse(block, userMessage) {
+async function handleToolUse(block, userMessage, context = {}) {
+  const focusKey = context.focusKey || '';
+
   if (block.name === 'save_todo' && block.input.task) {
     const { data: savedTodo, error } = await supabase.from('xlan_todos').insert({
       text: block.input.task,
@@ -2370,6 +2372,7 @@ async function handleToolUse(block, userMessage) {
     }
     const pLabel = { urgent: '🔴', important: '🟡', normal: '' }[block.input.priority || 'normal'];
     const stateMap = savedTodo ? new Map([[savedTodo.id, { status: '待處理' }]]) : new Map();
+    if (savedTodo) await saveTodoFocus(focusKey, [savedTodo], 'saved_todo');
     return {
       result: `已存入待辦${pLabel}：${block.input.task}`,
       flexMessage: savedTodo ? buildTodoActionFlex([savedTodo], stateMap) : null,
@@ -2379,6 +2382,10 @@ async function handleToolUse(block, userMessage) {
   if (block.name === 'complete_todo') {
     try {
       const keyword = String(block.input.keyword || '').trim();
+      if (!keyword) {
+        const focused = await resolveTodoActionFromFocus(focusKey, '完成', '完成');
+        if (focused) return focused;
+      }
       return resolveTodoActionByKeyword(keyword, '完成', '完成');
     } catch (err) {
       console.error('Complete todo error:', err.message);
@@ -2389,6 +2396,10 @@ async function handleToolUse(block, userMessage) {
   if (block.name === 'delete_todo') {
     try {
       const keyword = String(block.input.keyword || '').trim();
+      if (!keyword) {
+        const focused = await resolveTodoActionFromFocus(focusKey, '刪除', '刪除');
+        if (focused) return focused;
+      }
       return resolveTodoActionByKeyword(keyword, '刪除', '刪除');
     } catch (err) {
       console.error('Delete todo error:', err.message);
@@ -2401,6 +2412,10 @@ async function handleToolUse(block, userMessage) {
       const keyword = String(block.input.keyword || '').trim();
       const dueText = String(block.input.due_text || '').trim();
       if (!dueText) return { result: '要延後到什麼時候？例如：明天、下週一、6/5。', flexMessage: null };
+      if (!keyword) {
+        const focused = await resolveTodoActionFromFocus(focusKey, '延後', '延後', { dueText });
+        if (focused) return focused;
+      }
       return resolveTodoActionByKeyword(keyword, '延後', '延後', { dueText });
     } catch (err) {
       console.error('Postpone todo error:', err.message);
@@ -2412,6 +2427,10 @@ async function handleToolUse(block, userMessage) {
     try {
       const keyword = String(block.input.keyword || '').trim();
       const status = String(block.input.status || '').trim();
+      if (!keyword) {
+        const focused = await resolveTodoActionFromFocus(focusKey, status, `標記${status}`);
+        if (focused) return focused;
+      }
       return resolveTodoActionByKeyword(keyword, status, `標記${status}`);
     } catch (err) {
       console.error('Mark todo status error:', err.message);
@@ -2727,6 +2746,7 @@ async function handleToolUse(block, userMessage) {
       if (error) throw new Error(error.message);
 
       const tasks = block.input.tasks || [];
+      let savedTodos = [];
       if (tasks.length > 0) {
         const todoRows = tasks.map(t => ({
           text: t,
@@ -2734,11 +2754,18 @@ async function handleToolUse(block, userMessage) {
           project_name: block.input.name,
           priority: 'normal',
         }));
-        await supabase.from('xlan_todos').insert(todoRows);
+        const { data: insertedTodos, error: todoError } = await supabase.from('xlan_todos').insert(todoRows).select('*');
+        if (todoError) throw new Error(todoError.message);
+        savedTodos = insertedTodos || [];
+        await saveTodoFocus(focusKey, savedTodos, 'created_project');
       }
 
       const taskList = tasks.map((t, i) => `${i + 1}. 🔲 ${t}`).join('\n');
-      return { result: `📁 已建立專案：${block.input.name}\n\n工作項目（共${tasks.length}項）：\n${taskList}`, flexMessage: null };
+      const stateMap = new Map(savedTodos.map((todo) => [todo.id, { status: '待處理' }]));
+      return {
+        result: `📁 已建立專案：${block.input.name}\n\n工作項目（共${tasks.length}項）：\n${taskList}`,
+        flexMessage: savedTodos.length > 0 ? buildTodoActionFlex(savedTodos, stateMap) : null,
+      };
     } catch (err) {
       return { result: `建立專案失敗：${err.message}`, isError: true, flexMessage: null };
     }
@@ -2907,7 +2934,7 @@ async function chatWithClaude(userId, userContent, context = {}) {
 
     const toolResults = [];
     for (const block of toolBlocks) {
-      const { result, isError, flexMessage } = await handleToolUse(block, userMessageText);
+      const { result, isError, flexMessage } = await handleToolUse(block, userMessageText, context);
       toolResults.push({
         type: 'tool_result',
         tool_use_id: block.id,
@@ -3619,6 +3646,7 @@ async function handleGroupMessage(event) {
       const { reply, flexMessages } = await chatWithClaude(userId, cleanedText, {
         mode: 'group',
         trigger: '#',
+        focusKey,
       });
       const messages = [];
       if (flexMessages.length > 0) messages.push(...flexMessages);
@@ -3750,6 +3778,7 @@ async function handleDirectMessage(event) {
       const { reply, flexMessages } = await chatWithClaude(userId, imageContent, {
         mode: 'direct',
         trigger: '私訊圖片',
+        focusKey,
       });
       const labeledFlex = flexMessages.map((f) => {
         if (f.contents && f.contents.body && f.contents.body.contents) {
@@ -3883,6 +3912,7 @@ async function handleDirectMessage(event) {
     const { reply, flexMessages } = await chatWithClaude(userId, text, {
       mode: 'direct',
       trigger: '私訊文字',
+      focusKey,
     });
     replyMessages = [];
     if (flexMessages.length > 0) replyMessages.push(...flexMessages);
