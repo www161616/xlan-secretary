@@ -20,6 +20,20 @@ const STAFF_REPORT_SHEET_NAME = process.env.STAFF_REPORT_SHEET_NAME || '員工�
 const STAFF_REPORT_ORDER_SHEET_NAME = process.env.STAFF_REPORT_ORDER_SHEET_NAME || '所有訂單';
 const STAFF_REPORT_GROUP_ID = process.env.STAFF_REPORT_GROUP_ID;
 
+const CARD_THEME = {
+  page: '#FFFBEB',
+  panel: '#FFFFFF',
+  soft: '#FEF3C7',
+  line: '#FCD34D',
+  primary: '#F59E0B',
+  primaryDark: '#92400E',
+  text: '#1F2937',
+  muted: '#6B7280',
+  success: '#16A34A',
+  danger: '#DC2626',
+  info: '#2563EB',
+};
+
 // --- 初始化 ---
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
@@ -266,11 +280,12 @@ function buildExpenseQuickActionFlex(latestExpense, periodLabel = '今天') {
       body: {
         type: 'box',
         layout: 'vertical',
+        backgroundColor: CARD_THEME.page,
         spacing: 'md',
         contents: [
-          { type: 'text', text: `${periodLabel}帳務處理`, weight: 'bold', size: 'lg', color: '#111827' },
-          { type: 'text', text: latestText, size: 'sm', color: '#374151', wrap: true },
-          { type: 'text', text: '如果最近一筆分類或公司/私人錯了，可以直接點。', size: 'xs', color: '#6B7280', wrap: true },
+          { type: 'text', text: `${periodLabel}帳務處理`, weight: 'bold', size: 'lg', color: CARD_THEME.primaryDark },
+          { type: 'text', text: latestText, size: 'sm', color: CARD_THEME.text, wrap: true },
+          { type: 'text', text: '如果最近一筆分類或公司/私人錯了，可以直接點。', size: 'xs', color: CARD_THEME.muted, wrap: true },
         ],
       },
       footer: {
@@ -286,11 +301,14 @@ function buildExpenseQuickActionFlex(latestExpense, periodLabel = '今天') {
               {
                 type: 'button',
                 height: 'sm',
+                style: 'primary',
+                color: CARD_THEME.primary,
                 action: { type: 'message', label: '算公司', text: latestId ? `記帳:${latestId}:公司` : '最近一筆算公司' },
               },
               {
                 type: 'button',
                 height: 'sm',
+                style: 'secondary',
                 action: { type: 'message', label: '算私人', text: latestId ? `記帳:${latestId}:私人` : '最近一筆算私人' },
               },
             ],
@@ -303,12 +321,13 @@ function buildExpenseQuickActionFlex(latestExpense, periodLabel = '今天') {
               {
                 type: 'button',
                 height: 'sm',
+                style: 'secondary',
                 action: { type: 'message', label: '改分類', text: latestId ? `記帳:${latestId}:分類` : '最近一筆分類' },
               },
               {
                 type: 'button',
                 height: 'sm',
-                color: '#DC2626',
+                color: CARD_THEME.danger,
                 action: { type: 'message', label: '刪除', text: latestId ? `記帳:${latestId}:刪除` : '刪除最近一筆記帳' },
               },
             ],
@@ -488,7 +507,7 @@ async function downloadLineImageBuffer(messageId) {
 // --- Flex Message：記帳卡片 ---
 function buildExpenseFlexMessage({ id, amount, category, note, type, account, label }) {
   const isIncome = type === 'income';
-  const color = isIncome ? '#4CAF50' : '#FF6B6B';
+  const accentColor = isIncome ? CARD_THEME.success : CARD_THEME.primary;
   const typeText = isIncome ? '收入' : '支出';
   const accountText = account === 'business' ? '公司' : '私人';
   const now = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -502,17 +521,20 @@ function buildExpenseFlexMessage({ id, amount, category, note, type, account, la
       body: {
         type: 'box',
         layout: 'vertical',
-        backgroundColor: color,
+        backgroundColor: CARD_THEME.page,
         paddingAll: '20px',
+        spacing: 'sm',
         contents: [
           ...(label ? [{
             type: 'box',
             layout: 'horizontal',
+            backgroundColor: CARD_THEME.soft,
+            paddingAll: '8px',
             contents: [{
               type: 'text',
               text: label,
               size: 'xxs',
-              color: '#FFFFFF',
+              color: CARD_THEME.primaryDark,
               weight: 'bold',
             }],
             justifyContent: 'flex-end',
@@ -521,20 +543,21 @@ function buildExpenseFlexMessage({ id, amount, category, note, type, account, la
             type: 'text',
             text: `${typeText}・${accountText}`,
             size: 'sm',
-            color: '#FFFFFF90',
+            color: accentColor,
+            weight: 'bold',
           },
           {
             type: 'text',
             text: `NT$ ${amount.toLocaleString()}`,
             size: 'xxl',
             weight: 'bold',
-            color: '#FFFFFF',
+            color: CARD_THEME.primaryDark,
             margin: 'sm',
           },
           {
             type: 'separator',
             margin: 'lg',
-            color: '#FFFFFF30',
+            color: CARD_THEME.line,
           },
           {
             type: 'box',
@@ -546,24 +569,24 @@ function buildExpenseFlexMessage({ id, amount, category, note, type, account, la
                 type: 'box',
                 layout: 'horizontal',
                 contents: [
-                  { type: 'text', text: '類別', size: 'sm', color: '#FFFFFF90', flex: 2 },
-                  { type: 'text', text: category, size: 'sm', color: '#FFFFFF', flex: 5, weight: 'bold' },
+                  { type: 'text', text: '類別', size: 'sm', color: CARD_THEME.muted, flex: 2 },
+                  { type: 'text', text: category, size: 'sm', color: CARD_THEME.text, flex: 5, weight: 'bold' },
                 ],
               },
               ...(note ? [{
                 type: 'box',
                 layout: 'horizontal',
                 contents: [
-                  { type: 'text', text: '備註', size: 'sm', color: '#FFFFFF90', flex: 2 },
-                  { type: 'text', text: note, size: 'sm', color: '#FFFFFF', flex: 5, wrap: true },
+                  { type: 'text', text: '備註', size: 'sm', color: CARD_THEME.muted, flex: 2 },
+                  { type: 'text', text: note, size: 'sm', color: CARD_THEME.text, flex: 5, wrap: true },
                 ],
               }] : []),
               {
                 type: 'box',
                 layout: 'horizontal',
                 contents: [
-                  { type: 'text', text: '時間', size: 'sm', color: '#FFFFFF90', flex: 2 },
-                  { type: 'text', text: now, size: 'sm', color: '#FFFFFF', flex: 5 },
+                  { type: 'text', text: '時間', size: 'sm', color: CARD_THEME.muted, flex: 2 },
+                  { type: 'text', text: now, size: 'sm', color: CARD_THEME.text, flex: 5 },
                 ],
               },
             ],
@@ -572,7 +595,7 @@ function buildExpenseFlexMessage({ id, amount, category, note, type, account, la
             type: 'text',
             text: '✓ 已記錄',
             size: 'xs',
-            color: '#FFFFFF60',
+            color: accentColor,
             align: 'end',
             margin: 'lg',
           },
@@ -592,12 +615,14 @@ function buildExpenseFlexMessage({ id, amount, category, note, type, account, la
                 type: 'button',
                 style: account === 'business' ? 'primary' : 'secondary',
                 height: 'sm',
+                color: account === 'business' ? CARD_THEME.primary : undefined,
                 action: { type: 'message', label: '公司', text: id ? `記帳:${id}:公司` : '最近一筆算公司' },
               },
               {
                 type: 'button',
                 style: account === 'personal' ? 'primary' : 'secondary',
                 height: 'sm',
+                color: account === 'personal' ? CARD_THEME.primary : undefined,
                 action: { type: 'message', label: '私人', text: id ? `記帳:${id}:私人` : '最近一筆算私人' },
               },
             ],
@@ -610,11 +635,13 @@ function buildExpenseFlexMessage({ id, amount, category, note, type, account, la
               {
                 type: 'button',
                 height: 'sm',
+                style: 'secondary',
                 action: { type: 'message', label: '分類', text: id ? `記帳:${id}:分類` : '最近一筆分類' },
               },
               {
                 type: 'button',
                 height: 'sm',
+                style: 'secondary',
                 action: { type: 'message', label: '本月摘要', text: '本月記帳摘要' },
               },
             ],
@@ -622,7 +649,7 @@ function buildExpenseFlexMessage({ id, amount, category, note, type, account, la
           {
             type: 'button',
             height: 'sm',
-            color: '#DC2626',
+            color: CARD_THEME.danger,
             action: { type: 'message', label: '刪除這筆', text: id ? `記帳:${id}:刪除` : '刪除最近一筆記帳' },
           },
         ],
@@ -642,6 +669,7 @@ function buildExpenseCategoryFlex(expenseId) {
       contents: categories.slice(i, i + 2).map((category) => ({
         type: 'button',
         height: 'sm',
+        style: 'secondary',
         action: { type: 'message', label: category, text: expenseId ? `記帳:${expenseId}:分類:${category}` : `最近一筆分類${category}` },
       })),
     });
@@ -656,10 +684,11 @@ function buildExpenseCategoryFlex(expenseId) {
       body: {
         type: 'box',
         layout: 'vertical',
+        backgroundColor: CARD_THEME.page,
         spacing: 'md',
         contents: [
-          { type: 'text', text: '選擇分類', weight: 'bold', size: 'lg', color: '#111827' },
-          { type: 'text', text: '這會更新剛剛那筆記帳。', size: 'sm', color: '#6B7280', wrap: true },
+          { type: 'text', text: '選擇分類', weight: 'bold', size: 'lg', color: CARD_THEME.primaryDark },
+          { type: 'text', text: '這會更新剛剛那筆記帳。', size: 'sm', color: CARD_THEME.muted, wrap: true },
         ],
       },
       footer: {
@@ -704,6 +733,7 @@ const SYSTEM_PROMPT = `【回覆規則】
 - 幫香奈記錄、整理、分析任何事情
 - 回答問題、草擬文字、計算數字都可以
 - 重要資訊用條列式整理，不廢話
+- 香奈喜歡黃色系、精緻、乾淨、有質感的 UI；卡片或視覺回覆優先用暖黃色、琥珀色、奶油白、深棕灰文字。
 
 【最重要的規則 — 待辦 vs 記事 判斷】
 待辦（save_todo）= 需要執行的動作，有動詞：去、打、買、確認、回覆、處理、安排、記得、幫、叫、通知。
@@ -1674,18 +1704,21 @@ function buildStaffReportGuideFlex() {
       body: {
         type: 'box',
         layout: 'vertical',
+        backgroundColor: CARD_THEME.page,
         spacing: 'md',
         contents: [
-          { type: 'text', text: '員工回報', weight: 'bold', size: 'lg', color: '#111827' },
-          { type: 'text', text: '照順序補資料，小瀾會寫進 Google Sheet。', size: 'sm', color: '#6B7280', wrap: true },
+          { type: 'text', text: '員工回報', weight: 'bold', size: 'lg', color: CARD_THEME.primaryDark },
+          { type: 'text', text: '照順序補資料，小瀾會寫進 Google Sheet。', size: 'sm', color: CARD_THEME.muted, wrap: true },
           {
             type: 'box',
             layout: 'vertical',
+            backgroundColor: CARD_THEME.soft,
+            paddingAll: '12px',
             spacing: 'xs',
             contents: [
-              { type: 'text', text: '1. 輸入 #回報 少3 / 破2 / 錯1', size: 'sm', color: '#374151', wrap: true },
-              { type: 'text', text: '2. 上傳運單照片，標籤要清楚', size: 'sm', color: '#374151', wrap: true },
-              { type: 'text', text: '3. 上傳問題照片，破損或少貨要看得到', size: 'sm', color: '#374151', wrap: true },
+              { type: 'text', text: '1. 輸入 #回報 少3 / 破2 / 錯1', size: 'sm', color: CARD_THEME.text, wrap: true },
+              { type: 'text', text: '2. 上傳運單照片，標籤要清楚', size: 'sm', color: CARD_THEME.text, wrap: true },
+              { type: 'text', text: '3. 上傳問題照片，破損或少貨要看得到', size: 'sm', color: CARD_THEME.text, wrap: true },
             ],
           },
         ],
@@ -1695,9 +1728,9 @@ function buildStaffReportGuideFlex() {
         layout: 'vertical',
         spacing: 'sm',
         contents: [
-          { type: 'button', height: 'sm', action: { type: 'message', label: '少3', text: '#回報 少3' } },
-          { type: 'button', height: 'sm', action: { type: 'message', label: '破2', text: '#回報 破2' } },
-          { type: 'button', height: 'sm', action: { type: 'message', label: '取消', text: '取消回報' } },
+          { type: 'button', style: 'primary', color: CARD_THEME.primary, height: 'sm', action: { type: 'message', label: '少3', text: '#回報 少3' } },
+          { type: 'button', style: 'secondary', height: 'sm', action: { type: 'message', label: '破2', text: '#回報 破2' } },
+          { type: 'button', height: 'sm', color: CARD_THEME.danger, action: { type: 'message', label: '取消', text: '取消回報' } },
         ],
       },
     },
@@ -2468,14 +2501,14 @@ async function handleTodoActionCommand(text) {
 
 function buildTodoCandidateActionFlex(todos, action, stateMap = new Map(), dueText = '') {
   const actionConfig = {
-    完成: { label: '完成這件', color: '#16A34A', command: '完成' },
-    刪除: { label: '刪除這件', color: '#DC2626', command: '刪除' },
-    延後: { label: `延後到${dueText || '明天'}`, color: '#F59E0B', command: `延後:${dueText || '明天'}` },
-    進行中: { label: '標進行中', color: '#F59E0B', command: '進行中' },
+    完成: { label: '完成這件', color: CARD_THEME.primary, command: '完成' },
+    刪除: { label: '刪除這件', color: CARD_THEME.danger, command: '刪除' },
+    延後: { label: `延後到${dueText || '明天'}`, color: CARD_THEME.primary, command: `延後:${dueText || '明天'}` },
+    進行中: { label: '標進行中', color: CARD_THEME.primary, command: '進行中' },
     半完成: { label: '標半完成', color: '#F97316', command: '半完成' },
-    等待回覆: { label: '標等回覆', color: '#2563EB', command: '等待回覆' },
-    未完成: { label: '標未完成', color: '#6B7280', command: '未完成' },
-  }[action] || { label: '處理這件', color: '#6B7280', command: action };
+    等待回覆: { label: '標等回覆', color: CARD_THEME.info, command: '等待回覆' },
+    未完成: { label: '標未完成', color: CARD_THEME.muted, command: '未完成' },
+  }[action] || { label: '處理這件', color: CARD_THEME.muted, command: action };
 
   const bubbles = (todos || []).slice(0, 5).map((todo) => {
     const state = stateMap.get(todo.id) || {};
@@ -2489,10 +2522,11 @@ function buildTodoCandidateActionFlex(todos, action, stateMap = new Map(), dueTe
       body: {
         type: 'box',
         layout: 'vertical',
+        backgroundColor: CARD_THEME.page,
         spacing: 'sm',
         contents: [
-          { type: 'text', text: title, weight: 'bold', size: 'sm', color: '#111827', wrap: true },
-          { type: 'text', text: status, size: 'xxs', color: '#4B5563', wrap: true },
+          { type: 'text', text: title, weight: 'bold', size: 'sm', color: CARD_THEME.text, wrap: true },
+          { type: 'text', text: status, size: 'xxs', color: CARD_THEME.primaryDark, wrap: true },
         ],
       },
       footer: {
@@ -2510,6 +2544,7 @@ function buildTodoCandidateActionFlex(todos, action, stateMap = new Map(), dueTe
           {
             type: 'button',
             height: 'sm',
+            style: 'secondary',
             action: { type: 'message', label: '看待辦', text: '待辦' },
           },
         ],
@@ -3367,12 +3402,13 @@ function buildTodoActionFlex(todos, stateMap = new Map()) {
       body: {
         type: 'box',
         layout: 'vertical',
+        backgroundColor: CARD_THEME.page,
         spacing: 'sm',
         contents: [
-          { type: 'text', text: `#${n}`, weight: 'bold', size: 'xs', color: '#6B7280' },
-          { type: 'text', text: title, weight: 'bold', size: 'sm', wrap: true, color: '#111827' },
-          { type: 'text', text: status, size: 'xxs', color: '#374151', wrap: true },
-          { type: 'text', text: source, size: 'xxs', color: '#6B7280', wrap: true },
+          { type: 'text', text: `#${n}`, weight: 'bold', size: 'xs', color: CARD_THEME.primaryDark },
+          { type: 'text', text: title, weight: 'bold', size: 'sm', wrap: true, color: CARD_THEME.text },
+          { type: 'text', text: status, size: 'xxs', color: CARD_THEME.primaryDark, wrap: true },
+          { type: 'text', text: source, size: 'xxs', color: CARD_THEME.muted, wrap: true },
         ],
       },
       footer: {
@@ -3384,7 +3420,7 @@ function buildTodoActionFlex(todos, stateMap = new Map()) {
             type: 'button',
             style: 'primary',
             height: 'sm',
-            color: '#16A34A',
+            color: CARD_THEME.primary,
             action: { type: 'message', label: '完成', text: `待辦:${todo.id}:完成` },
           },
           {
@@ -3395,11 +3431,13 @@ function buildTodoActionFlex(todos, stateMap = new Map()) {
               {
                 type: 'button',
                 height: 'sm',
+                style: 'secondary',
                 action: { type: 'message', label: '進行中', text: `待辦:${todo.id}:進行中` },
               },
               {
                 type: 'button',
                 height: 'sm',
+                style: 'secondary',
                 action: { type: 'message', label: '半完成', text: `待辦:${todo.id}:半完成` },
               },
             ],
@@ -3412,11 +3450,13 @@ function buildTodoActionFlex(todos, stateMap = new Map()) {
               {
                 type: 'button',
                 height: 'sm',
+                style: 'secondary',
                 action: { type: 'message', label: '等回覆', text: `待辦:${todo.id}:等待回覆` },
               },
               {
                 type: 'button',
                 height: 'sm',
+                style: 'secondary',
                 action: { type: 'message', label: '明天', text: `待辦:${todo.id}:延後:明天` },
               },
             ],
@@ -3429,12 +3469,13 @@ function buildTodoActionFlex(todos, stateMap = new Map()) {
               {
                 type: 'button',
                 height: 'sm',
+                style: 'secondary',
                 action: { type: 'message', label: '未完成', text: `待辦:${todo.id}:未完成` },
               },
               {
                 type: 'button',
                 height: 'sm',
-                color: '#DC2626',
+                color: CARD_THEME.danger,
                 action: { type: 'message', label: '刪除', text: `待辦:${todo.id}:刪除` },
               },
             ],
@@ -3635,10 +3676,11 @@ function buildBriefingQuickActionFlex() {
       body: {
         type: 'box',
         layout: 'vertical',
+        backgroundColor: CARD_THEME.page,
         spacing: 'md',
         contents: [
-          { type: 'text', text: '快捷處理', weight: 'bold', size: 'lg', color: '#111827' },
-          { type: 'text', text: '帳務或最近一筆記錯，可以直接點。', size: 'sm', color: '#6B7280', wrap: true },
+          { type: 'text', text: '快捷處理', weight: 'bold', size: 'lg', color: CARD_THEME.primaryDark },
+          { type: 'text', text: '帳務或最近一筆記錯，可以直接點。', size: 'sm', color: CARD_THEME.muted, wrap: true },
         ],
       },
       footer: {
@@ -3651,8 +3693,8 @@ function buildBriefingQuickActionFlex() {
             layout: 'horizontal',
             spacing: 'sm',
             contents: [
-              { type: 'button', height: 'sm', action: { type: 'message', label: '今天帳務', text: '今天帳務' } },
-              { type: 'button', height: 'sm', action: { type: 'message', label: '本月帳務', text: '本月帳務' } },
+              { type: 'button', style: 'primary', color: CARD_THEME.primary, height: 'sm', action: { type: 'message', label: '今天帳務', text: '今天帳務' } },
+              { type: 'button', style: 'secondary', height: 'sm', action: { type: 'message', label: '本月帳務', text: '本月帳務' } },
             ],
           },
           {
@@ -3660,8 +3702,8 @@ function buildBriefingQuickActionFlex() {
             layout: 'horizontal',
             spacing: 'sm',
             contents: [
-              { type: 'button', height: 'sm', action: { type: 'message', label: '算公司', text: '最近一筆算公司' } },
-              { type: 'button', height: 'sm', action: { type: 'message', label: '分類', text: '最近一筆分類' } },
+              { type: 'button', style: 'secondary', height: 'sm', action: { type: 'message', label: '算公司', text: '最近一筆算公司' } },
+              { type: 'button', style: 'secondary', height: 'sm', action: { type: 'message', label: '分類', text: '最近一筆分類' } },
             ],
           },
         ],

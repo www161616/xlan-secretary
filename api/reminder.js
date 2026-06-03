@@ -3,6 +3,15 @@ const { createClient } = require('@supabase/supabase-js');
 const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
+const CARD_THEME = {
+  page: '#FFFBEB',
+  primary: '#F59E0B',
+  primaryDark: '#92400E',
+  text: '#1F2937',
+  muted: '#6B7280',
+  danger: '#DC2626',
+};
+
 function sanitizeLineText(text) {
   return String(text || '').replace(/\*\*/g, '').trim() || '已處理。';
 }
@@ -314,11 +323,12 @@ function buildReminderTodoFlex(todos, stateMap = new Map()) {
       body: {
         type: 'box',
         layout: 'vertical',
+        backgroundColor: CARD_THEME.page,
         spacing: 'sm',
         contents: [
-          { type: 'text', text: `#${n}`, weight: 'bold', size: 'xs', color: '#6B7280' },
-          { type: 'text', text: displayTitle, weight: 'bold', size: 'sm', color: '#111827', wrap: true },
-          { type: 'text', text: status, size: 'xxs', color: '#374151', wrap: true },
+          { type: 'text', text: `#${n}`, weight: 'bold', size: 'xs', color: CARD_THEME.primaryDark },
+          { type: 'text', text: displayTitle, weight: 'bold', size: 'sm', color: CARD_THEME.text, wrap: true },
+          { type: 'text', text: status, size: 'xxs', color: CARD_THEME.primaryDark, wrap: true },
         ],
       },
       footer: {
@@ -330,7 +340,7 @@ function buildReminderTodoFlex(todos, stateMap = new Map()) {
             type: 'button',
             style: 'primary',
             height: 'sm',
-            color: '#16A34A',
+            color: CARD_THEME.primary,
             action: { type: 'message', label: '完成', text: `待辦:${todo.id}:完成` },
           },
           {
@@ -338,8 +348,8 @@ function buildReminderTodoFlex(todos, stateMap = new Map()) {
             layout: 'horizontal',
             spacing: 'xs',
             contents: [
-              { type: 'button', height: 'sm', action: { type: 'message', label: '半完成', text: `待辦:${todo.id}:半完成` } },
-              { type: 'button', height: 'sm', action: { type: 'message', label: '等待', text: `待辦:${todo.id}:等待回覆` } },
+              { type: 'button', style: 'secondary', height: 'sm', action: { type: 'message', label: '半完成', text: `待辦:${todo.id}:半完成` } },
+              { type: 'button', style: 'secondary', height: 'sm', action: { type: 'message', label: '等待', text: `待辦:${todo.id}:等待回覆` } },
             ],
           },
           {
@@ -347,8 +357,8 @@ function buildReminderTodoFlex(todos, stateMap = new Map()) {
             layout: 'horizontal',
             spacing: 'xs',
             contents: [
-              { type: 'button', height: 'sm', action: { type: 'message', label: '明天', text: `待辦:${todo.id}:延後:明天` } },
-              { type: 'button', height: 'sm', color: '#DC2626', action: { type: 'message', label: '刪除', text: `待辦:${todo.id}:刪除` } },
+              { type: 'button', style: 'secondary', height: 'sm', action: { type: 'message', label: '明天', text: `待辦:${todo.id}:延後:明天` } },
+              { type: 'button', height: 'sm', color: CARD_THEME.danger, action: { type: 'message', label: '刪除', text: `待辦:${todo.id}:刪除` } },
             ],
           },
         ],
@@ -378,10 +388,11 @@ function buildExpenseReminderFlex() {
       body: {
         type: 'box',
         layout: 'vertical',
+        backgroundColor: CARD_THEME.page,
         spacing: 'md',
         contents: [
-          { type: 'text', text: '帳務快捷處理', weight: 'bold', size: 'lg', color: '#111827' },
-          { type: 'text', text: '今天有記錯的帳，可以直接點下面修正。', size: 'sm', color: '#6B7280', wrap: true },
+          { type: 'text', text: '帳務快捷處理', weight: 'bold', size: 'lg', color: CARD_THEME.primaryDark },
+          { type: 'text', text: '今天有記錯的帳，可以直接點下面修正。', size: 'sm', color: CARD_THEME.muted, wrap: true },
         ],
       },
       footer: {
@@ -394,8 +405,8 @@ function buildExpenseReminderFlex() {
             layout: 'horizontal',
             spacing: 'sm',
             contents: [
-              { type: 'button', height: 'sm', action: { type: 'message', label: '今天帳務', text: '今天帳務' } },
-              { type: 'button', height: 'sm', action: { type: 'message', label: '本月帳務', text: '本月帳務' } },
+              { type: 'button', style: 'primary', color: CARD_THEME.primary, height: 'sm', action: { type: 'message', label: '今天帳務', text: '今天帳務' } },
+              { type: 'button', style: 'secondary', height: 'sm', action: { type: 'message', label: '本月帳務', text: '本月帳務' } },
             ],
           },
           {
@@ -403,8 +414,8 @@ function buildExpenseReminderFlex() {
             layout: 'horizontal',
             spacing: 'sm',
             contents: [
-              { type: 'button', height: 'sm', action: { type: 'message', label: '算公司', text: '最近一筆算公司' } },
-              { type: 'button', height: 'sm', action: { type: 'message', label: '分類', text: '最近一筆分類' } },
+              { type: 'button', style: 'secondary', height: 'sm', action: { type: 'message', label: '算公司', text: '最近一筆算公司' } },
+              { type: 'button', style: 'secondary', height: 'sm', action: { type: 'message', label: '分類', text: '最近一筆分類' } },
             ],
           },
         ],
