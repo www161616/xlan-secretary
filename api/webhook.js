@@ -481,6 +481,11 @@ function classifyTextIntent(text, context = {}) {
     return { intent: 'memory_delete', confidence: 0.85, route: 'memory', reason: 'memory_delete' };
   }
   if (/https?:\/\//i.test(raw)) return { intent: 'memory_save', confidence: 0.85, route: 'memory', reason: 'url_save' };
+  // 明確的儲存意圖（記錄/記住/下次回傳）要先攔，否則含「帳號/密碼」會被下面的查詢規則搶走，變成吐舊筆記
+  if (/(記錄|記住|記下|記一下|幫我記|先記|存起來|存一下)/.test(raw) ||
+      (/(下次|以後|之後|每次)/.test(raw) && /(回傳|回覆|回我|告訴|給我|提供)/.test(raw))) {
+    return { intent: 'todo_or_tool', confidence: 0.85, route: 'claude_tool', reason: 'explicit_memory_save' };
+  }
   if (/網址|網站|連結|link|url|資料|在哪|哪裡|電話|帳號|密碼|有沒有記|規格|承諾/i.test(raw)) {
     return { intent: 'memory_query', confidence: 0.78, route: 'memory', reason: 'business_memory_query' };
   }
