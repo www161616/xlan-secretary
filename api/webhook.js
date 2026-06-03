@@ -457,7 +457,9 @@ function classifyTextIntent(text, context = {}) {
     return { intent: 'memory_delete', confidence: 0.85, route: 'memory', reason: 'memory_delete' };
   }
   if (/https?:\/\//i.test(raw)) return { intent: 'memory_save', confidence: 0.85, route: 'memory', reason: 'url_save' };
-  if (/網址|網站|連結|link|url/i.test(raw)) return { intent: 'memory_query', confidence: 0.75, route: 'memory', reason: 'url_query' };
+  if (/網址|網站|連結|link|url|資料|在哪|哪裡|電話|帳號|密碼|有沒有記|規格|承諾/i.test(raw)) {
+    return { intent: 'memory_query', confidence: 0.78, route: 'memory', reason: 'business_memory_query' };
+  }
   if (/(提醒|每天\d{1,2}點|[0-9一二三四五六七八九十]+點叫我)/.test(raw)) return { intent: 'reminder', confidence: 0.75, route: 'claude_tool', reason: 'reminder_language' };
   if (/(幫我|記得|提醒我|確認|處理|安排|通知|打電話|問|追|做|買|付款|上架|拍照)/.test(raw)) {
     return { intent: 'todo_or_tool', confidence: 0.65, route: 'claude_tool', reason: 'action_language' };
@@ -1256,6 +1258,78 @@ function cleanNoteMutationKeyword(text) {
     .join(' ');
 }
 
+function extractMemoryKeywords(text) {
+  const raw = String(text || '');
+  const protectedPhrases = [
+    '薪資系統', '新系統', 'ERP', 'LT-ERP', '包子媽系統', '樂樂團購',
+    '1688', '集運', '員工回報', '小瀾後台', '小瀾 webhook', 'LINE webhook',
+  ];
+  const keywords = [];
+  for (const phrase of protectedPhrases) {
+    if (raw.toLowerCase().includes(phrase.toLowerCase())) keywords.push(phrase);
+  }
+
+  const cleaned = raw
+    .replace(/https?:\/\/[^\s，。！？、)）]+/ig, ' ')
+    .replace(/(這是|這個是|幫我|幫|記一下|記起來|記錄|網址|網站|連結|link|url|資料|筆記|是多少|是什麼|在哪|哪裡|請問|以後|下次|要回覆我|跟我說|告訴我|有沒有記|不用記了|不用記|不要記了|不要記|刪掉|刪除|忘掉|忘記|改成|改為|更新成|更新為|換成|換為|新的|的)/ig, ' ')
+    .replace(/[，。！？、,.!?;；:：\s"'「」『』（）()【】\[\]#]/g, ' ')
+    .trim();
+
+  for (const part of cleaned.split(/\s+/)) {
+    if (/^[A-Za-z0-9-]{2,}$/.test(part) || /[\u4e00-\u9fa5]{2,}/.test(part)) {
+      keywords.push(part);
+    }
+  }
+
+  const expanded = [];
+  for (const keyword of keywords) {
+    expanded.push(keyword);
+    if (/erp/i.test(keyword)) expanded.push('ERP', 'LT-ERP');
+    if (/薪資/.test(keyword)) expanded.push('薪資系統', '薪資');
+    if (/新系統/.test(keyword)) expanded.push('新系統');
+    if (/包子媽/.test(keyword)) expanded.push('包子媽系統', '包子媽');
+  }
+
+  return [...new Set(expanded.map((k) => String(k || '').trim()).filter((k) => k.length >= 2))].slice(0, 8);
+}
+
+function scoreMemoryNote(note, keywords) {
+  const content = String(note?.content || '');
+  let score = 0;
+  for (const keyword of keywords) {
+    if (!keyword) continue;
+    if (content.includes(keyword)) score += keyword.length + 8;
+    const compactContent = content.toLowerCase();
+    const compactKeyword = String(keyword).toLowerCase();
+    if (compactContent.includes(compactKeyword)) score += keyword.length + 4;
+  }
+  if (extractFirstUrl(content)) score += 3;
+  if ((note.tags || []).includes('網址')) score += 2;
+  return score;
+}
+
+async function findNotesByKeywords(keywords, limit = 5) {
+  const noteMap = new Map();
+  for (const keyword of keywords || []) {
+    const { data } = await supabase
+      .from('xlan_notes')
+      .select('*')
+      .ilike('content', `%${keyword}%`)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    for (const note of data || []) {
+      noteMap.set(note.id, note);
+    }
+  }
+
+  return Array.from(noteMap.values())
+    .map((note) => ({ note, score: scoreMemoryNote(note, keywords) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || new Date(b.note.created_at || 0) - new Date(a.note.created_at || 0))
+    .map((item) => item.note)
+    .slice(0, limit);
+}
+
 async function rememberUrlFromText(text) {
   const url = extractFirstUrl(text);
   if (!url) return null;
@@ -1270,23 +1344,11 @@ async function rememberUrlFromText(text) {
 
 async function answerUrlFromMemory(text) {
   if (!/網址|網站|連結|link|url/i.test(text)) return null;
-  const keyword = cleanMemoryKeyword(text);
-  if (!keyword) return null;
+  const keywords = extractMemoryKeywords(text);
+  if (keywords.length === 0) return null;
 
-  const words = keyword.split(/\s+/).filter(Boolean);
-  let notes = [];
-  for (const word of words) {
-    const { data } = await supabase
-      .from('xlan_notes')
-      .select('*')
-      .ilike('content', `%${word}%`)
-      .order('created_at', { ascending: false })
-      .limit(5);
-    notes = notes.concat(data || []);
-  }
-
-  const unique = Array.from(new Map(notes.map((note) => [note.id, note])).values());
-  const withUrls = unique
+  const notes = await findNotesByKeywords(keywords, 5);
+  const withUrls = notes
     .map((note) => ({ note, url: extractFirstUrl(note.content) }))
     .filter((item) => item.url);
   if (withUrls.length === 0) return null;
@@ -1295,22 +1357,23 @@ async function answerUrlFromMemory(text) {
   return best.content;
 }
 
-async function findNotesByKeyword(keyword, limit = 5) {
-  const words = String(keyword || '').split(/\s+/).filter(Boolean);
-  if (words.length === 0) return [];
-  const noteMap = new Map();
-  for (const word of words) {
-    const { data } = await supabase
-      .from('xlan_notes')
-      .select('*')
-      .ilike('content', `%${word}%`)
-      .order('created_at', { ascending: false })
-      .limit(limit);
-    for (const note of data || []) {
-      noteMap.set(note.id, note);
-    }
+async function answerBusinessMemoryFromText(text) {
+  if (!/(網址|網站|連結|link|url|資料|在哪|哪裡|是多少|是什麼|電話|帳號|密碼|有沒有記|誰|規格|承諾|系統)/i.test(text)) {
+    return null;
   }
-  return Array.from(noteMap.values()).slice(0, limit);
+  const keywords = extractMemoryKeywords(text);
+  if (keywords.length === 0) return null;
+  const notes = await findNotesByKeywords(keywords, 5);
+  if (notes.length === 0) return null;
+  if (notes.length === 1) return notes[0].content;
+
+  const top = notes.slice(0, 3).map((note, i) => `${i + 1}. ${note.content}`).join('\n');
+  return `我找到幾筆可能相關的記憶：\n${top}`;
+}
+
+async function findNotesByKeyword(keyword, limit = 5) {
+  const keywords = extractMemoryKeywords(keyword);
+  return findNotesByKeywords(keywords, limit);
 }
 
 async function updateNoteByKeyword(keyword, content, tags = []) {
@@ -1367,28 +1430,12 @@ async function deleteNoteFromText(text) {
 }
 
 function keywordPartsFromText(text) {
-  return cleanMemoryKeyword(text)
-    .split(/\s+/)
-    .map((part) => part.trim())
-    .filter((part) => part.length >= 2)
-    .slice(0, 6);
+  return extractMemoryKeywords(text).slice(0, 6);
 }
 
 async function getRelevantNotesForContext(text) {
-  const words = keywordPartsFromText(text);
-  const noteMap = new Map();
-  for (const word of words) {
-    const { data } = await supabase
-      .from('xlan_notes')
-      .select('content, tags, created_at')
-      .ilike('content', `%${word}%`)
-      .order('created_at', { ascending: false })
-      .limit(5);
-    for (const note of data || []) {
-      noteMap.set(`${note.created_at}:${note.content}`, note);
-    }
-  }
-  return Array.from(noteMap.values()).slice(0, 5);
+  const keywords = keywordPartsFromText(text);
+  return findNotesByKeywords(keywords, 5);
 }
 
 async function buildAgentKnowledgeContext(userContent) {
@@ -3875,6 +3922,12 @@ async function handleGroupMessage(event) {
         return;
       }
 
+      const businessMemoryAnswer = await answerBusinessMemoryFromText(cleanedText);
+      if (businessMemoryAnswer) {
+        await replyMessage(event.replyToken, businessMemoryAnswer);
+        return;
+      }
+
       const focusedExpenseReply = await resolveFocusedExpenseReply(cleanedText, focusKey);
       if (focusedExpenseReply) {
         await replyMessage(event.replyToken, focusedExpenseReply);
@@ -4096,6 +4149,7 @@ async function handleDirectMessage(event) {
   const deletedNote = updatedUrlMemory ? null : await deleteNoteFromText(text);
   const rememberedUrl = (updatedUrlMemory || deletedNote) ? null : await rememberUrlFromText(text);
   const memoryUrlAnswer = (updatedUrlMemory || deletedNote || rememberedUrl) ? null : await answerUrlFromMemory(text);
+  const businessMemoryAnswer = (updatedUrlMemory || deletedNote || rememberedUrl || memoryUrlAnswer) ? null : await answerBusinessMemoryFromText(text);
 
   if (updatedUrlMemory) {
     replyMessages = [{ type: 'text', text: updatedUrlMemory }];
@@ -4105,6 +4159,8 @@ async function handleDirectMessage(event) {
     replyMessages = [{ type: 'text', text: rememberedUrl }];
   } else if (memoryUrlAnswer) {
     replyMessages = [{ type: 'text', text: memoryUrlAnswer }];
+  } else if (businessMemoryAnswer) {
+    replyMessages = [{ type: 'text', text: businessMemoryAnswer }];
   } else if (/^記帳:([0-9a-f-]+):分類:(.+)$/.test(text)) {
     const match = text.match(/^記帳:([0-9a-f-]+):分類:(.+)$/);
     replyMessages = [{ type: 'text', text: await updateExpenseCategory(match[1], match[2].trim()) }];
