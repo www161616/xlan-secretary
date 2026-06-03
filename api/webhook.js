@@ -493,7 +493,7 @@ const SYSTEM_PROMPT = `【回覆規則】
 1. 絕對不可以主動說明如何把Bot加進群組
 2. 絕對不可以說「直接把我加進LINE群組就可以了」
 3. 絕對不可以說「對！你說得沒錯」作為開頭
-4. 收到「完成」「已完成」「做好了」「處理好了」這類訊息，如果能從訊息判斷是哪一件待辦，就一定要呼叫 complete_todo 標記完成；不能判斷是哪一件時，請用一句話請用戶補關鍵字或回「完成第N項」
+4. 收到「完成」「已完成」「做好了」「處理好了」這類訊息，如果能從訊息判斷是哪一件待辦，就一定要呼叫 complete_todo 標記完成；不能判斷是哪一件時也要呼叫 complete_todo 並讓系統產生候選卡片
 5. 回覆要簡短直接，不要超過3行，除非用戶需要詳細資訊
 6. LINE 不支援 Markdown，不要使用 **粗體**、反引號、標題符號或 Markdown 連結；網址直接貼純文字。
 
@@ -582,7 +582,7 @@ account 判斷同記帳規則。
 
 【完成與延後】
 當用戶說「完成」「辦完了」「OK了」「處理好了」，如果有提到待辦關鍵字，例如「龍潭付款完成」「菜單好了」「廠商回覆了」，呼叫 complete_todo。
-如果只說「完成」但沒有目標，不要假裝完成，要回覆「是哪一件完成？可以回：完成第1項，或說完成的事項關鍵字。」
+如果只說「完成」但沒有目標，不要假裝完成，要呼叫 complete_todo，讓系統列出候選待辦卡片給用戶點選。
 當用戶說「延後」「明天再做」「下週再處理」，如果有提到待辦關鍵字，呼叫 postpone_todo。
 當用戶說「不用做」「取消」「刪掉」「不用管了」，如果有提到待辦關鍵字，呼叫 delete_todo。
 
@@ -2727,7 +2727,7 @@ async function listTodos() {
     })
     .join('\n');
 
-  return `📋 你的待辦清單\n\n${items}\n\n共 ${data.length} 項未完成。\n可點卡片，或回：完成第1項、半完成第1項、等待第1項、延後第1項到明天。`;
+  return `📋 你的待辦清單\n\n${items}\n\n共 ${data.length} 項未完成。\n可以直接點下面卡片處理。`;
 }
 
 function buildTodoActionFlex(todos, stateMap = new Map()) {
@@ -2839,6 +2839,13 @@ function todoDueRank(state, todayStr) {
   return 2;
 }
 
+function todoPressureLabel(todo, state = {}, todayStr) {
+  if (state.due_date && state.due_date < todayStr) return '逾期';
+  if (state.due_date === todayStr) return '今天到期';
+  if (todoAgeDays(todo) >= 3 && ['待處理', '半完成', '未完成'].includes(state.status || '待處理')) return '卡超過3天';
+  return '';
+}
+
 function todoAgeDays(todo) {
   if (!todo.created_at) return 0;
   return Math.floor((Date.now() - new Date(todo.created_at).getTime()) / 86400000);
@@ -2934,6 +2941,8 @@ async function buildSecretaryBriefingMessages() {
   const todayStr = formatDateYmd(getTaipeiDate());
   const sorted = sortTodosForBriefing(todos, stateMap, todayStr);
   const top = sorted.slice(0, 3);
+  const overdue = sorted.filter((todo) => (stateMap.get(todo.id)?.due_date || '') < todayStr && !!stateMap.get(todo.id)?.due_date).slice(0, 5);
+  const dueToday = sorted.filter((todo) => stateMap.get(todo.id)?.due_date === todayStr).slice(0, 5);
   const waiting = sorted.filter((todo) => (stateMap.get(todo.id)?.status || '待處理') === '等待回覆').slice(0, 5);
   const halfDone = sorted.filter((todo) => (stateMap.get(todo.id)?.status || '待處理') === '半完成').slice(0, 5);
   const stale = sorted.filter((todo) => {
@@ -2944,13 +2953,20 @@ async function buildSecretaryBriefingMessages() {
 
   const line = (todo, i) => {
     const state = stateMap.get(todo.id) || {};
-    return `${i + 1}. ${formatTodoLine(todo, state)}`;
+    const pressure = todoPressureLabel(todo, state, todayStr);
+    return `${i + 1}. ${pressure ? `[${pressure}] ` : ''}${formatTodoLine(todo, state)}`;
   };
-  const bullet = (todo) => `- ${formatTodoLine(todo, stateMap.get(todo.id))}`;
+  const bullet = (todo) => {
+    const state = stateMap.get(todo.id) || {};
+    const pressure = todoPressureLabel(todo, state, todayStr);
+    return `- ${pressure ? `[${pressure}] ` : ''}${formatTodoLine(todo, state)}`;
+  };
   const sections = [
     '今天我會先看這幾件：',
     top.length > 0 ? top.map(line).join('\n') : '目前沒有急件。',
   ];
+  if (overdue.length > 0) sections.push(`\n逾期要追：\n${overdue.map(bullet).join('\n')}`);
+  if (dueToday.length > 0) sections.push(`\n今天到期：\n${dueToday.map(bullet).join('\n')}`);
   if (waiting.length > 0) sections.push(`\n等待回覆：\n${waiting.map(bullet).join('\n')}`);
   if (halfDone.length > 0) sections.push(`\n半完成：\n${halfDone.map(bullet).join('\n')}`);
   if (stale.length > 0) sections.push(`\n卡比較久：\n${stale.map(bullet).join('\n')}`);
@@ -3058,7 +3074,7 @@ async function postponeTodo(n, dueText) {
   }
 
   const dueDate = parseTodoDueDate(dueText);
-  if (!dueDate) return '要延後到什麼時候？例如：延後第1項到明天、延後第1項到6/5。';
+  if (!dueDate) return '要延後到什麼時候？例如：明天、下週一、6/5。';
 
   const todo = data[n - 1];
   await saveTodoState(todo.id, { status: '待處理', due_date: dueDate });

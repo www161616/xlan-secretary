@@ -110,6 +110,57 @@ function formatTodoLine(todo, state) {
   return `${todoStatusIcon(state?.status)} ${pri}${cleanTodoDisplayText(todo.text)}${due}`;
 }
 
+function todoDueRank(state, todayStr) {
+  if (!state?.due_date) return 3;
+  if (state.due_date < todayStr) return 0;
+  if (state.due_date === todayStr) return 1;
+  return 2;
+}
+
+function todoAgeDays(todo) {
+  if (!todo.created_at) return 0;
+  return Math.floor((Date.now() - new Date(todo.created_at).getTime()) / 86400000);
+}
+
+function sortTodosForReminder(todos, stateMap, todayStr) {
+  return [...(todos || [])].sort((a, b) => {
+    const aState = stateMap.get(a.id) || {};
+    const bState = stateMap.get(b.id) || {};
+    const statusWeight = { 未完成: 90, 半完成: 80, 待處理: 70, 進行中: 65, 等待回覆: 45 };
+    const priorityWeight = { urgent: 120, important: 40, normal: 0 };
+    const aDue = todoDueRank(aState, todayStr);
+    const bDue = todoDueRank(bState, todayStr);
+    const aScore = (priorityWeight[a.priority || 'normal'] || 0)
+      + (statusWeight[aState.status || '待處理'] || 0)
+      + (aDue === 0 ? 45 : aDue === 1 ? 35 : 0)
+      + (todoAgeDays(a) >= 3 ? 12 : 0);
+    const bScore = (priorityWeight[b.priority || 'normal'] || 0)
+      + (statusWeight[bState.status || '待處理'] || 0)
+      + (bDue === 0 ? 45 : bDue === 1 ? 35 : 0)
+      + (todoAgeDays(b) >= 3 ? 12 : 0);
+    if (aScore !== bScore) return bScore - aScore;
+    return new Date(a.created_at || 0) - new Date(b.created_at || 0);
+  });
+}
+
+function summarizeTodoPressure(todos, stateMap, todayStr) {
+  const overdue = [];
+  const dueToday = [];
+  const stalled = [];
+  (todos || []).forEach((todo) => {
+    const state = stateMap.get(todo.id) || {};
+    if (state.due_date && state.due_date < todayStr) overdue.push(todo);
+    if (state.due_date === todayStr) dueToday.push(todo);
+    const status = state.status || '待處理';
+    if (['待處理', '未完成', '半完成'].includes(status) && todoAgeDays(todo) >= 3) stalled.push(todo);
+  });
+  const lines = [];
+  if (overdue.length > 0) lines.push(`逾期 ${overdue.length} 件`);
+  if (dueToday.length > 0) lines.push(`今天到期 ${dueToday.length} 件`);
+  if (stalled.length > 0) lines.push(`卡超過3天 ${stalled.length} 件`);
+  return lines.length ? `壓力點：${lines.join('、')}。` : '壓力點：目前沒有逾期或卡太久的待辦。';
+}
+
 function buildReminderTodoFlex(todos, stateMap = new Map()) {
   const bubbles = (todos || []).slice(0, 10).map((todo, i) => {
     const n = i + 1;
@@ -142,15 +193,15 @@ function buildReminderTodoFlex(todos, stateMap = new Map()) {
             style: 'primary',
             height: 'sm',
             color: '#16A34A',
-            action: { type: 'message', label: '完成', text: `完成第${n}項` },
+            action: { type: 'message', label: '完成', text: `待辦:${todo.id}:完成` },
           },
           {
             type: 'box',
             layout: 'horizontal',
             spacing: 'xs',
             contents: [
-              { type: 'button', height: 'sm', action: { type: 'message', label: '半完成', text: `半完成第${n}項` } },
-              { type: 'button', height: 'sm', action: { type: 'message', label: '等待', text: `等待第${n}項` } },
+              { type: 'button', height: 'sm', action: { type: 'message', label: '半完成', text: `待辦:${todo.id}:半完成` } },
+              { type: 'button', height: 'sm', action: { type: 'message', label: '等待', text: `待辦:${todo.id}:等待回覆` } },
             ],
           },
           {
@@ -158,8 +209,8 @@ function buildReminderTodoFlex(todos, stateMap = new Map()) {
             layout: 'horizontal',
             spacing: 'xs',
             contents: [
-              { type: 'button', height: 'sm', action: { type: 'message', label: '明天', text: `延後第${n}項到明天` } },
-              { type: 'button', height: 'sm', color: '#DC2626', action: { type: 'message', label: '刪除', text: `刪除第${n}項` } },
+              { type: 'button', height: 'sm', action: { type: 'message', label: '明天', text: `待辦:${todo.id}:延後:明天` } },
+              { type: 'button', height: 'sm', color: '#DC2626', action: { type: 'message', label: '刪除', text: `待辦:${todo.id}:刪除` } },
             ],
           },
         ],
@@ -444,15 +495,18 @@ async function checkCustomReminders(now) {
   if (currentHour < 20) {
     const { data: todos } = await supabase
       .from('xlan_todos').select('*').eq('done', false)
-      .order('created_at', { ascending: true }).limit(10);
+      .order('created_at', { ascending: true }).limit(50);
     const stateMap = await getTodoStateMap(todos || []);
-    const focus = (todos || [])
+    const todayStr = getTodayStr(now);
+    const sorted = sortTodosForReminder(todos || [], stateMap, todayStr);
+    const focus = sorted
       .filter(t => ['待處理', '進行中', '半完成', '等待回覆', '未完成'].includes(stateMap.get(t.id)?.status || '待處理'))
       .slice(0, 6);
     const items = focus.map((t, i) => `${i + 1}. ${formatTodoLine(t, stateMap.get(t.id))}`).join('\n');
-    const expenseCheck = await buildDailyExpenseCheck(getTodayStr(now));
+    const pressure = summarizeTodoPressure(todos || [], stateMap, todayStr);
+    const expenseCheck = await buildDailyExpenseCheck(todayStr);
     const messages = [
-      { type: 'text', text: `📋 ${matched.label || matched.message || '提醒'}\n\n目前需要盤點：\n${items || '（無待辦）'}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
+      { type: 'text', text: `📋 ${matched.label || matched.message || '提醒'}\n\n${pressure}\n\n目前需要先看：\n${items || '（無待辦）'}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
     ];
     const todoFlex = buildReminderTodoFlex(focus, stateMap);
     if (todoFlex) messages.push(todoFlex);
@@ -467,17 +521,20 @@ async function checkCustomReminders(now) {
     .gte('done_at', todayStart).order('done_at', { ascending: true });
   const { data: pendingTodos } = await supabase
     .from('xlan_todos').select('*').eq('done', false)
-    .order('created_at', { ascending: true }).limit(10);
+    .order('created_at', { ascending: true }).limit(50);
   const stateMap = await getTodoStateMap(pendingTodos || []);
+  const todayStr = getTodayStr(now);
+  const sortedPending = sortTodosForReminder(pendingTodos || [], stateMap, todayStr).slice(0, 10);
 
   const doneLines = (doneTodos || []).map(t => `✅ ${t.text}`).join('\n') || '（今天沒有完成項目）';
-  const pendingLines = (pendingTodos || []).map((t, i) => `${i + 1}. ${formatTodoLine(t, stateMap.get(t.id))}`).join('\n') || '（全部完成！）';
-  const expenseCheck = await buildDailyExpenseCheck(getTodayStr(now));
+  const pendingLines = sortedPending.map((t, i) => `${i + 1}. ${formatTodoLine(t, stateMap.get(t.id))}`).join('\n') || '（全部完成！）';
+  const pressure = summarizeTodoPressure(pendingTodos || [], stateMap, todayStr);
+  const expenseCheck = await buildDailyExpenseCheck(todayStr);
 
   const messages = [
-    { type: 'text', text: `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n還要追蹤：\n${pendingLines}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
+    { type: 'text', text: `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n${pressure}\n\n還要追蹤：\n${pendingLines}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
   ];
-  const todoFlex = buildReminderTodoFlex(pendingTodos || [], stateMap);
+  const todoFlex = buildReminderTodoFlex(sortedPending, stateMap);
   if (todoFlex) messages.push(todoFlex);
   messages.push(buildExpenseReminderFlex());
   return messages;
