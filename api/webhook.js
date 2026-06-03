@@ -2025,6 +2025,108 @@ async function handleTodoActionCommand(text) {
   return markTodoStatusById(todoId, action);
 }
 
+function buildTodoCandidateActionFlex(todos, action, stateMap = new Map(), dueText = '') {
+  const actionConfig = {
+    完成: { label: '完成這件', color: '#16A34A', command: '完成' },
+    刪除: { label: '刪除這件', color: '#DC2626', command: '刪除' },
+    延後: { label: `延後到${dueText || '明天'}`, color: '#F59E0B', command: `延後:${dueText || '明天'}` },
+    進行中: { label: '標進行中', color: '#F59E0B', command: '進行中' },
+    半完成: { label: '標半完成', color: '#F97316', command: '半完成' },
+    等待回覆: { label: '標等回覆', color: '#2563EB', command: '等待回覆' },
+    未完成: { label: '標未完成', color: '#6B7280', command: '未完成' },
+  }[action] || { label: '處理這件', color: '#6B7280', command: action };
+
+  const bubbles = (todos || []).slice(0, 5).map((todo) => {
+    const state = stateMap.get(todo.id) || {};
+    const displayText = cleanTodoDisplayText(todo.text);
+    const title = displayText.length > 58 ? `${displayText.slice(0, 58)}...` : displayText;
+    const due = state.due_date ? `｜延後到 ${state.due_date}` : '';
+    const status = `${todoStatusIcon(state.status)} ${state.status || '待處理'}${due}`;
+    return {
+      type: 'bubble',
+      size: 'micro',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          { type: 'text', text: title, weight: 'bold', size: 'sm', color: '#111827', wrap: true },
+          { type: 'text', text: status, size: 'xxs', color: '#4B5563', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'xs',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            height: 'sm',
+            color: actionConfig.color,
+            action: { type: 'message', label: actionConfig.label, text: `待辦:${todo.id}:${actionConfig.command}` },
+          },
+          {
+            type: 'button',
+            height: 'sm',
+            action: { type: 'message', label: '看待辦', text: '待辦' },
+          },
+        ],
+      },
+    };
+  });
+
+  if (bubbles.length === 0) return null;
+  return {
+    type: 'flex',
+    altText: '請選擇待辦',
+    contents: { type: 'carousel', contents: bubbles },
+  };
+}
+
+async function resolveTodoActionByKeyword(keyword, action, actionLabel, options = {}) {
+  const todos = await getPendingTodos();
+  const topTodos = todos.slice(0, 5);
+  const needsChoice = async (message, choiceTodos) => {
+    if (!choiceTodos || choiceTodos.length === 0) {
+      return { result: '目前沒有未完成待辦。', flexMessage: null };
+    }
+    const stateMap = await getTodoStateMap(choiceTodos);
+    return {
+      result: message,
+      flexMessage: buildTodoCandidateActionFlex(choiceTodos, action, stateMap, options.dueText || ''),
+    };
+  };
+
+  if (!keyword) {
+    return needsChoice(
+      `是哪一件要${actionLabel}？我先列出幾件未完成待辦，你可以直接點。`,
+      topTodos,
+    );
+  }
+
+  const candidates = rankTodoCandidates(todos, keyword);
+  if (candidates.length === 0) {
+    return needsChoice(
+      `找不到包含「${keyword}」的未完成待辦。我先列出幾件可能要處理的，你可以直接點。`,
+      topTodos,
+    );
+  }
+
+  const best = candidates[0];
+  if (candidates.length > 1 && best.score === candidates[1].score && best.score < 8) {
+    return needsChoice(
+      `找到幾個可能的待辦，請直接點你要${actionLabel}的那件。`,
+      candidates.map((item) => item.todo).slice(0, 5),
+    );
+  }
+
+  if (action === '完成') return { result: await completeTodoById(best.todo.id), flexMessage: null };
+  if (action === '刪除') return { result: await deleteTodoById(best.todo.id), flexMessage: null };
+  if (action === '延後') return { result: await postponeTodoById(best.todo.id, options.dueText), flexMessage: null };
+  return { result: await markTodoStatusById(best.todo.id, action), flexMessage: null };
+}
+
 // --- 處理 tool use 結果 ---
 async function handleToolUse(block, userMessage) {
   if (block.name === 'save_todo' && block.input.task) {
@@ -2049,15 +2151,7 @@ async function handleToolUse(block, userMessage) {
   if (block.name === 'complete_todo') {
     try {
       const keyword = String(block.input.keyword || '').trim();
-      if (!keyword) {
-        const todos = await getPendingTodos(5);
-        const list = todos.map((t, i) => `${i + 1}. ${t.text}`).join('\n');
-        return {
-          result: `是哪一件完成？可以回「完成第1項」，或說完成的事項關鍵字。\n${list || '目前沒有未完成待辦。'}`,
-          flexMessage: null,
-        };
-      }
-      return { result: await completeTodoByKeyword(keyword), flexMessage: null };
+      return resolveTodoActionByKeyword(keyword, '完成', '完成');
     } catch (err) {
       console.error('Complete todo error:', err.message);
       return { result: `標記完成失敗：${err.message}`, isError: true, flexMessage: null };
@@ -2067,8 +2161,7 @@ async function handleToolUse(block, userMessage) {
   if (block.name === 'delete_todo') {
     try {
       const keyword = String(block.input.keyword || '').trim();
-      if (!keyword) return { result: '要刪除哪一件？可以回「刪除第1項」，或說「龍潭付款不用做了」。', flexMessage: null };
-      return { result: await deleteTodoByKeyword(keyword), flexMessage: null };
+      return resolveTodoActionByKeyword(keyword, '刪除', '刪除');
     } catch (err) {
       console.error('Delete todo error:', err.message);
       return { result: `刪除失敗：${err.message}`, isError: true, flexMessage: null };
@@ -2079,8 +2172,8 @@ async function handleToolUse(block, userMessage) {
     try {
       const keyword = String(block.input.keyword || '').trim();
       const dueText = String(block.input.due_text || '').trim();
-      if (!keyword) return { result: '要延後哪一件？可以回「延後第1項到明天」，或說「龍潭付款明天再做」。', flexMessage: null };
-      return { result: await postponeTodoByKeyword(keyword, dueText), flexMessage: null };
+      if (!dueText) return { result: '要延後到什麼時候？例如：明天、下週一、6/5。', flexMessage: null };
+      return resolveTodoActionByKeyword(keyword, '延後', '延後', { dueText });
     } catch (err) {
       console.error('Postpone todo error:', err.message);
       return { result: `延後失敗：${err.message}`, isError: true, flexMessage: null };
@@ -2091,13 +2184,7 @@ async function handleToolUse(block, userMessage) {
     try {
       const keyword = String(block.input.keyword || '').trim();
       const status = String(block.input.status || '').trim();
-      if (!keyword) {
-        return {
-          result: '要更新哪一件？可以回「等待第1項」，或說「舒肥雞文案先等老闆」。',
-          flexMessage: null,
-        };
-      }
-      return { result: await markTodoStatusByKeyword(keyword, status), flexMessage: null };
+      return resolveTodoActionByKeyword(keyword, status, `標記${status}`);
     } catch (err) {
       console.error('Mark todo status error:', err.message);
       return { result: `更新狀態失敗：${err.message}`, isError: true, flexMessage: null };
