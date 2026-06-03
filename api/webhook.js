@@ -1343,13 +1343,13 @@ function scoreMemoryNote(note, keywords) {
 
 async function findNotesByKeywords(keywords, limit = 5) {
   const noteMap = new Map();
-  for (const keyword of keywords || []) {
-    const { data } = await supabase
+  const results = await Promise.all((keywords || []).map((keyword) => supabase
       .from('xlan_notes')
       .select('*')
       .ilike('content', `%${keyword}%`)
       .order('created_at', { ascending: false })
-      .limit(limit);
+      .limit(limit)));
+  for (const { data } of results) {
     for (const note of data || []) {
       noteMap.set(note.id, note);
     }
@@ -1524,22 +1524,49 @@ async function buildAgentKnowledgeContext(userContent) {
   const userText = typeof userContent === 'string' ? userContent : '';
   const sections = [];
 
-  const correctionRules = await getRecentCorrectionRules(userText, 5);
-  if (correctionRules.length > 0) {
-    sections.push(`香奈修正過的規則：\n${correctionRules.map((n, i) => `${i + 1}. ${n.content}`).join('\n')}`);
-  }
-
-  const notes = await getRelevantNotesForContext(userText);
-  if (notes.length > 0) {
-    sections.push(`相關記憶：\n${notes.map((n, i) => `${i + 1}. ${n.content}`).join('\n')}`);
-  }
-
-  const { data: todos } = await supabase
+  const correctionRulesPromise = getRecentCorrectionRules(userText, 5);
+  const notesPromise = getRelevantNotesForContext(userText);
+  const todosPromise = supabase
     .from('xlan_todos')
     .select('id, text, priority, source_person, project_name, created_at')
     .eq('done', false)
     .order('created_at', { ascending: true })
     .limit(8);
+  const payablesPromise = supabase
+    .from('xlan_payables')
+    .select('title, amount, to_whom, due_date, note')
+    .eq('status', 'pending')
+    .order('due_date', { ascending: true, nullsFirst: false })
+    .limit(5);
+  const shipmentsPromise = supabase
+    .from('xlan_shipments')
+    .select('title, expected_date, note')
+    .eq('status', 'pending')
+    .order('expected_date', { ascending: true })
+    .limit(5);
+
+  const [
+    correctionRules,
+    notes,
+    { data: todos },
+    { data: payables },
+    { data: shipments },
+  ] = await Promise.all([
+    correctionRulesPromise,
+    notesPromise,
+    todosPromise,
+    payablesPromise,
+    shipmentsPromise,
+  ]);
+
+  if (correctionRules.length > 0) {
+    sections.push(`香奈修正過的規則：\n${correctionRules.map((n, i) => `${i + 1}. ${n.content}`).join('\n')}`);
+  }
+
+  if (notes.length > 0) {
+    sections.push(`相關記憶：\n${notes.map((n, i) => `${i + 1}. ${n.content}`).join('\n')}`);
+  }
+
   if (todos && todos.length > 0) {
     const stateMap = await getTodoStateMap(todos);
     sections.push(`目前待辦：\n${todos.map((t, i) => {
@@ -1552,12 +1579,6 @@ async function buildAgentKnowledgeContext(userContent) {
     }).join('\n')}`);
   }
 
-  const { data: payables } = await supabase
-    .from('xlan_payables')
-    .select('title, amount, to_whom, due_date, note')
-    .eq('status', 'pending')
-    .order('due_date', { ascending: true, nullsFirst: false })
-    .limit(5);
   if (payables && payables.length > 0) {
     sections.push(`待付款：\n${payables.map((p, i) => {
       const amount = p.amount ? ` NT$${p.amount}` : '';
@@ -1566,12 +1587,6 @@ async function buildAgentKnowledgeContext(userContent) {
     }).join('\n')}`);
   }
 
-  const { data: shipments } = await supabase
-    .from('xlan_shipments')
-    .select('title, expected_date, note')
-    .eq('status', 'pending')
-    .order('expected_date', { ascending: true })
-    .limit(5);
   if (shipments && shipments.length > 0) {
     sections.push(`待到貨/陸貨：\n${shipments.map((s, i) => `${i + 1}. ${s.title} 預計:${s.expected_date}`).join('\n')}`);
   }
@@ -3276,18 +3291,22 @@ function addContextToUserContent(userContent, context, knowledgeContext = '') {
 
 async function chatWithClaude(userId, userContent, context = {}) {
   const chatStartedAt = Date.now();
-  const { data: history } = await supabase
+  const historyPromise = supabase
     .from('xlan_conversations')
     .select('role, content')
     .eq('user_id', userId)
     .order('created_at', { ascending: true })
     .limit(20);
+  const knowledgeContextPromise = buildAgentKnowledgeContext(userContent);
+  const [{ data: history }, knowledgeContext] = await Promise.all([
+    historyPromise,
+    knowledgeContextPromise,
+  ]);
 
   const messages = (history || []).map((h) => ({
     role: h.role,
     content: h.content,
   }));
-  const knowledgeContext = await buildAgentKnowledgeContext(userContent);
   messages.push({ role: 'user', content: addContextToUserContent(userContent, context, knowledgeContext) });
 
   let response = await anthropic.messages.create({
@@ -4168,6 +4187,41 @@ async function handleDirectFastCommand(text, focusKey = '') {
   return null;
 }
 
+async function resolveDirectMemoryPreflight(text, intent = {}) {
+  const startedAt = Date.now();
+  let reply = null;
+
+  if (intent.intent === 'memory_update') {
+    reply = await updateUrlMemoryFromText(text);
+  } else if (intent.intent === 'memory_delete') {
+    reply = await deleteNoteFromText(text);
+  } else if (intent.intent === 'correction') {
+    reply = await rememberCorrectionFromText(text);
+  } else if (intent.intent === 'memory_save') {
+    reply = await rememberUrlFromText(text);
+  } else if (intent.intent === 'memory_query') {
+    reply = await answerUrlFromMemory(text) || await answerBusinessMemoryFromText(text);
+  }
+
+  if (reply) {
+    console.log('direct_pre_claude_timing', {
+      intent: intent.intent,
+      elapsed_ms: Date.now() - startedAt,
+      matched: true,
+    });
+    return [{ type: 'text', text: reply }];
+  }
+
+  if (['memory_update', 'memory_delete', 'correction', 'memory_save', 'memory_query'].includes(intent.intent)) {
+    console.log('direct_pre_claude_timing', {
+      intent: intent.intent,
+      elapsed_ms: Date.now() - startedAt,
+      matched: false,
+    });
+  }
+  return null;
+}
+
 // --- 私訊處理 ---
 async function handleDirectMessage(event) {
   const msgType = event.message.type;
@@ -4249,27 +4303,14 @@ async function handleDirectMessage(event) {
     return;
   }
 
-  let replyMessages;
-  const updatedUrlMemory = await updateUrlMemoryFromText(text);
-  const deletedNote = updatedUrlMemory ? null : await deleteNoteFromText(text);
-  const correctionMemory = (updatedUrlMemory || deletedNote) ? null : await rememberCorrectionFromText(text);
-  const rememberedUrl = (updatedUrlMemory || deletedNote || correctionMemory) ? null : await rememberUrlFromText(text);
-  const memoryUrlAnswer = (updatedUrlMemory || deletedNote || correctionMemory || rememberedUrl) ? null : await answerUrlFromMemory(text);
-  const businessMemoryAnswer = (updatedUrlMemory || deletedNote || correctionMemory || rememberedUrl || memoryUrlAnswer) ? null : await answerBusinessMemoryFromText(text);
+  const memoryPreflightMessages = await resolveDirectMemoryPreflight(text, intent);
+  if (memoryPreflightMessages) {
+    await replyMessage(event.replyToken, memoryPreflightMessages);
+    return;
+  }
 
-  if (updatedUrlMemory) {
-    replyMessages = [{ type: 'text', text: updatedUrlMemory }];
-  } else if (deletedNote) {
-    replyMessages = [{ type: 'text', text: deletedNote }];
-  } else if (correctionMemory) {
-    replyMessages = [{ type: 'text', text: correctionMemory }];
-  } else if (rememberedUrl) {
-    replyMessages = [{ type: 'text', text: rememberedUrl }];
-  } else if (memoryUrlAnswer) {
-    replyMessages = [{ type: 'text', text: memoryUrlAnswer }];
-  } else if (businessMemoryAnswer) {
-    replyMessages = [{ type: 'text', text: businessMemoryAnswer }];
-  } else if (/^記帳:([0-9a-f-]+):分類:(.+)$/.test(text)) {
+  let replyMessages;
+  if (/^記帳:([0-9a-f-]+):分類:(.+)$/.test(text)) {
     const match = text.match(/^記帳:([0-9a-f-]+):分類:(.+)$/);
     replyMessages = [{ type: 'text', text: await updateExpenseCategory(match[1], match[2].trim()) }];
   } else if (/^記帳:([0-9a-f-]+):(公司|私人|刪除|分類)$/.test(text)) {
