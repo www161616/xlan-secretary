@@ -460,6 +460,7 @@ function classifyTextIntent(text, context = {}) {
   if (/^待辦:[0-9a-f-]{32,36}:/i.test(raw)) return { intent: 'todo_action', confidence: 1, route: 'fast', reason: 'todo_callback' };
   if (/^記帳:[0-9a-f-]+:/i.test(raw)) return { intent: 'expense_action', confidence: 1, route: 'fast', reason: 'expense_callback' };
   if (/^(待辦|清單|檢查待辦|任務清單)$/.test(raw)) return { intent: 'todo_list', confidence: 1, route: 'fast', reason: 'todo_list_command' };
+  if (parseTodoPlanningScope(raw)) return { intent: 'todo_planning', confidence: 1, route: 'fast', reason: 'todo_planning_question' };
   if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(raw)) {
     return { intent: 'briefing', confidence: 1, route: 'fast', reason: 'briefing_command' };
   }
@@ -2222,6 +2223,12 @@ function formatDateYmd(date) {
   return `${y}-${m}-${d}`;
 }
 
+function addDays(date, days) {
+  const next = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
 function parseTodoDueDate(text) {
   const raw = String(text || '').trim();
   const now = getTaipeiDate();
@@ -3716,6 +3723,92 @@ function summarizeExpensesForBriefing(expenses) {
   return `收入 NT$${income}，支出 NT$${expense}，公司 NT$${businessExpense}，私人 NT$${personalExpense}。`;
 }
 
+function parseTodoPlanningScope(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+  if (!/(要做|待辦|事情|工作|安排|先做|處理|行程|任務)/.test(raw)) return '';
+  if (/明天/.test(raw)) return 'tomorrow';
+  if (/後天/.test(raw)) return 'after_tomorrow';
+  if (/本週|這週|這禮拜|這星期|一週|下週|下周|下禮拜|下星期/.test(raw)) return 'week';
+  if (/今天|今日|現在/.test(raw)) return 'today';
+  return '';
+}
+
+function planningScopeLabel(scope) {
+  return {
+    today: '今天',
+    tomorrow: '明天',
+    after_tomorrow: '後天',
+    week: '這週',
+  }[scope] || '近期';
+}
+
+function planningScopeRange(scope) {
+  const today = getTaipeiDate();
+  const todayStr = formatDateYmd(today);
+  if (scope === 'tomorrow') {
+    const target = formatDateYmd(addDays(today, 1));
+    return { start: target, end: target, todayStr };
+  }
+  if (scope === 'after_tomorrow') {
+    const target = formatDateYmd(addDays(today, 2));
+    return { start: target, end: target, todayStr };
+  }
+  if (scope === 'week') {
+    return { start: todayStr, end: formatDateYmd(addDays(today, 7)), todayStr };
+  }
+  return { start: todayStr, end: todayStr, todayStr };
+}
+
+function filterTodosByPlanningScope(todos, stateMap, scope) {
+  const { start, end } = planningScopeRange(scope);
+  if (scope === 'today') {
+    return (todos || []).filter((todo) => {
+      const due = stateMap.get(todo.id)?.due_date || '';
+      return (due && due <= start) || todo.priority === 'urgent';
+    });
+  }
+  return (todos || []).filter((todo) => {
+    const due = stateMap.get(todo.id)?.due_date || '';
+    return due && due >= start && due <= end;
+  });
+}
+
+async function buildTodoPlanningMessages(scope, focusKey = '') {
+  if (scope === 'today') return buildSecretaryBriefingMessages(focusKey);
+
+  const todos = await getPendingTodos(50);
+  const stateMap = await getTodoStateMap(todos);
+  const { todayStr, start, end } = planningScopeRange(scope);
+  const sorted = sortTodosForBriefing(todos, stateMap, todayStr);
+  const matched = filterTodosByPlanningScope(sorted, stateMap, scope);
+  const fallback = matched.length > 0 ? matched : sorted.slice(0, 5);
+  const label = planningScopeLabel(scope);
+  const rangeLabel = start === end ? start : `${start}～${end}`;
+
+  const lines = fallback.slice(0, 8).map((todo, i) => {
+    const state = stateMap.get(todo.id) || {};
+    return `${i + 1}. ${formatTodoLine(todo, state)}`;
+  });
+  const lead = matched.length > 0
+    ? `${label}要看的待辦：`
+    : `${label}沒有明確到期的待辦，我先列近期最該處理的：`;
+  const text = [
+    `${lead}`,
+    lines.length > 0 ? lines.join('\n') : '目前沒有未完成待辦。',
+    '',
+    `範圍：${rangeLabel}`,
+    buildTodoRecommendation(todos, stateMap, todayStr),
+  ].join('\n');
+
+  const messages = [{ type: 'text', text }];
+  if (fallback.length > 0) {
+    await saveTodoFocus(focusKey, fallback, `${scope}_planning`);
+    messages.push(buildTodoActionFlex(fallback, stateMap));
+  }
+  return messages;
+}
+
 function buildBriefingQuickActionFlex() {
   return {
     type: 'flex',
@@ -4054,6 +4147,12 @@ async function handleGroupMessage(event) {
       const intent = classifyTextIntent(cleanedText, { mode: 'group', cleaned: true });
       console.log('intent_router', { mode: 'group', ...intent, text: cleanedText.slice(0, 40) });
 
+      const planningScope = parseTodoPlanningScope(cleanedText);
+      if (planningScope) {
+        await replyMessage(event.replyToken, await buildTodoPlanningMessages(planningScope, focusKey));
+        return;
+      }
+
       if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(cleanedText)) {
         await replyMessage(event.replyToken, await buildSecretaryBriefingMessages(focusKey));
         return;
@@ -4159,6 +4258,10 @@ async function handleDirectFastCommand(text, focusKey = '') {
   }
   if (/^(本週記帳摘要|本週帳務|本週收支|這週帳務|這週花多少)$/.test(text)) {
     return buildExpenseSummaryReplyMessages('this_week', focusKey);
+  }
+  const planningScope = parseTodoPlanningScope(text);
+  if (planningScope) {
+    return buildTodoPlanningMessages(planningScope, focusKey);
   }
   if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(text)) {
     return buildSecretaryBriefingMessages(focusKey);
