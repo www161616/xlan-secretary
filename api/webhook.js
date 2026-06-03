@@ -3799,7 +3799,7 @@ function summarizeExpensesForBriefing(expenses) {
 function parseTodoPlanningScope(text) {
   const raw = String(text || '').trim();
   if (!raw) return '';
-  if (!/(要做|待辦|事情|工作|安排|先做|處理|行程|任務)/.test(raw)) return '';
+  if (!/(要做|待辦|事情|工作|安排|先做|處理|行程|任務|有什麼|有沒有|要忙|忙什麼|該做|做什麼)/.test(raw)) return '';
   if (/明天/.test(raw)) return 'tomorrow';
   if (/後天/.test(raw)) return 'after_tomorrow';
   if (/本週|這週|這禮拜|這星期|一週|下週|下周|下禮拜|下星期/.test(raw)) return 'week';
