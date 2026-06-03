@@ -161,6 +161,37 @@ function summarizeTodoPressure(todos, stateMap, todayStr) {
   return lines.length ? `壓力點：${lines.join('、')}。` : '壓力點：目前沒有逾期或卡太久的待辦。';
 }
 
+function todoStateAgeDays(state = {}) {
+  if (!state.updated_at) return null;
+  const updatedAt = new Date(state.updated_at).getTime();
+  if (!Number.isFinite(updatedAt)) return null;
+  return Math.floor((Date.now() - updatedAt) / 86400000);
+}
+
+function findTodosNeedingStatusCheck(todos, stateMap) {
+  return (todos || []).filter((todo) => {
+    const state = stateMap.get(todo.id) || {};
+    const status = state.status || '待處理';
+    const age = todoStateAgeDays(state);
+    if (age === null) return false;
+    if (status === '等待回覆' && age >= 2) return true;
+    if (['進行中', '半完成'].includes(status) && age >= 2) return true;
+    if (status === '未完成' && age >= 1) return true;
+    return false;
+  });
+}
+
+function summarizeStatusCheckTodos(todos, stateMap) {
+  const targets = findTodosNeedingStatusCheck(todos, stateMap).slice(0, 5);
+  if (targets.length === 0) return '';
+  const lines = targets.map((todo) => {
+    const state = stateMap.get(todo.id) || {};
+    const age = todoStateAgeDays(state);
+    return `- ${formatTodoLine(todo, state)}（${state.status || '待處理'}已${age}天沒更新）`;
+  }).join('\n');
+  return `需要確認狀態：\n${lines}`;
+}
+
 function inferTodoWorkLane(todo) {
   const raw = `${todo?.text || ''} ${todo?.source_message || ''} ${todo?.project_name || ''}`.toLowerCase();
   if (/中和|文山|龍潭|林口|永和|平鎮|經國|古華|南平|門市|店/.test(raw)) return '門市';
@@ -588,9 +619,10 @@ async function checkCustomReminders(now) {
     const pressure = summarizeTodoPressure(todos || [], stateMap, todayStr);
     const workload = summarizeTodoWorkLanes(todos || []);
     const recommendation = buildTodoRecommendation(todos || [], stateMap, todayStr);
+    const statusCheck = summarizeStatusCheckTodos(sorted, stateMap);
     const expenseCheck = await buildDailyExpenseCheck(todayStr);
     const messages = [
-      { type: 'text', text: `📋 ${matched.label || matched.message || '提醒'}\n\n${workload}\n${recommendation}\n\n${pressure}\n\n目前需要先看：\n${items || '（無待辦）'}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
+      { type: 'text', text: `📋 ${matched.label || matched.message || '提醒'}\n\n${workload}\n${recommendation}\n\n${pressure}\n${statusCheck ? `\n${statusCheck}\n` : ''}\n目前需要先看：\n${items || '（無待辦）'}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
     ];
     const todoFlex = buildReminderTodoFlex(focus, stateMap);
     if (todoFlex) messages.push(todoFlex);
@@ -615,10 +647,11 @@ async function checkCustomReminders(now) {
   const pressure = summarizeTodoPressure(pendingTodos || [], stateMap, todayStr);
   const workload = summarizeTodoWorkLanes(pendingTodos || []);
   const recommendation = buildTodoRecommendation(pendingTodos || [], stateMap, todayStr);
+  const statusCheck = summarizeStatusCheckTodos(sortedPending, stateMap);
   const expenseCheck = await buildDailyExpenseCheck(todayStr);
 
   const messages = [
-    { type: 'text', text: `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n${workload}\n${recommendation}\n\n${pressure}\n\n還要追蹤：\n${pendingLines}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
+    { type: 'text', text: `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n${workload}\n${recommendation}\n\n${pressure}\n${statusCheck ? `\n${statusCheck}\n` : ''}\n還要追蹤：\n${pendingLines}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
   ];
   const todoFlex = buildReminderTodoFlex(sortedPending, stateMap);
   if (todoFlex) messages.push(todoFlex);

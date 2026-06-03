@@ -2846,6 +2846,37 @@ function todoPressureLabel(todo, state = {}, todayStr) {
   return '';
 }
 
+function todoStateAgeDays(state = {}) {
+  if (!state.updated_at) return null;
+  const updatedAt = new Date(state.updated_at).getTime();
+  if (!Number.isFinite(updatedAt)) return null;
+  return Math.floor((Date.now() - updatedAt) / 86400000);
+}
+
+function findTodosNeedingStatusCheck(todos, stateMap) {
+  return (todos || []).filter((todo) => {
+    const state = stateMap.get(todo.id) || {};
+    const status = state.status || '待處理';
+    const age = todoStateAgeDays(state);
+    if (age === null) return false;
+    if (status === '等待回覆' && age >= 2) return true;
+    if (['進行中', '半完成'].includes(status) && age >= 2) return true;
+    if (status === '未完成' && age >= 1) return true;
+    return false;
+  });
+}
+
+function summarizeStatusCheckTodos(todos, stateMap) {
+  const targets = findTodosNeedingStatusCheck(todos, stateMap).slice(0, 5);
+  if (targets.length === 0) return '';
+  const lines = targets.map((todo) => {
+    const state = stateMap.get(todo.id) || {};
+    const age = todoStateAgeDays(state);
+    return `- ${formatTodoLine(todo, state)}（${state.status || '待處理'}已${age}天沒更新）`;
+  }).join('\n');
+  return `需要確認狀態：\n${lines}`;
+}
+
 function inferTodoWorkLane(todo) {
   const raw = `${todo?.text || ''} ${todo?.source_message || ''} ${todo?.project_name || ''}`.toLowerCase();
   if (/中和|文山|龍潭|林口|永和|平鎮|經國|古華|南平|門市|店/.test(raw)) return '門市';
@@ -3031,6 +3062,7 @@ async function buildSecretaryBriefingMessages() {
     const status = stateMap.get(todo.id)?.status || '待處理';
     return ['待處理', '未完成'].includes(status) && todoAgeDays(todo) >= 2;
   }).slice(0, 5);
+  const statusCheck = summarizeStatusCheckTodos(sorted, stateMap);
   const expenses = await getExpenses('today');
 
   const line = (todo, i) => {
@@ -3055,6 +3087,7 @@ async function buildSecretaryBriefingMessages() {
   if (waiting.length > 0) sections.push(`\n等待回覆：\n${waiting.map(bullet).join('\n')}`);
   if (halfDone.length > 0) sections.push(`\n半完成：\n${halfDone.map(bullet).join('\n')}`);
   if (stale.length > 0) sections.push(`\n卡比較久：\n${stale.map(bullet).join('\n')}`);
+  if (statusCheck) sections.push(`\n${statusCheck}`);
   sections.push(`\n今日帳務：\n${summarizeExpensesForBriefing(expenses)}`);
   sections.push('\n你可以直接點下面卡片處理。');
 
@@ -3118,6 +3151,7 @@ async function buildWorkReportMessages(period = 'today') {
   const expenses = await getExpenses(period);
   const doneLines = (doneTodos || []).slice(0, 5).map((todo, i) => `${i + 1}. ${cleanTodoDisplayText(todo.text)}`).join('\n') || '（沒有完成紀錄）';
   const pendingLines = sorted.slice(0, 5).map((todo, i) => `${i + 1}. ${formatTodoLine(todo, stateMap.get(todo.id))}`).join('\n') || '（沒有未完成待辦）';
+  const statusCheck = summarizeStatusCheckTodos(sorted, stateMap);
 
   const sections = [
     `📊 ${label}工作報告`,
@@ -3129,6 +3163,7 @@ async function buildWorkReportMessages(period = 'today') {
     summarizeTodoWorkLanes(pending),
     summarizeDoneWorkLanes(doneTodos || []),
     buildTodoRecommendation(pending, stateMap, todayStr),
+    statusCheck || '需要確認狀態：目前沒有卡住太久的狀態。',
     '',
     `最近完成：\n${doneLines}`,
     '',
