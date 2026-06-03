@@ -480,6 +480,9 @@ function classifyTextIntent(text, context = {}) {
   if (/(不用記了|不用記|不要記了|不要記|刪掉|刪除|忘掉|忘記)/.test(raw) && /(網址|網站|筆記|資料|電話|系統|承諾|規格|帳號|密碼)/.test(raw)) {
     return { intent: 'memory_delete', confidence: 0.85, route: 'memory', reason: 'memory_delete' };
   }
+  if (/^(我的連結|常用連結|所有連結|所有網址|我的網址|連結清單|網址清單|連結列表|網址列表)$/.test(raw)) {
+    return { intent: 'url_list', confidence: 1, route: 'memory', reason: 'url_list_command' };
+  }
   if (/https?:\/\//i.test(raw)) return { intent: 'memory_save', confidence: 0.85, route: 'memory', reason: 'url_save' };
   // 明確的儲存意圖（記錄/記住/下次回傳）要先攔，否則含「帳號/密碼」會被下面的查詢規則搶走，變成吐舊筆記
   if (/(記錄|記住|記下|記一下|幫我記|先記|存起來|存一下)/.test(raw) ||
@@ -1310,7 +1313,7 @@ function extractFirstUrl(text) {
 function cleanMemoryKeyword(text) {
   return String(text || '')
     .replace(/https?:\/\/[^\s，。！？、)）]+/ig, '')
-    .replace(/(這是|這個是|幫我|幫|記一下|記起來|記錄|網址|網站|是多少|是什麼|請問|以後|下次|要回覆我|跟我說|告訴我|的)/g, ' ')
+    .replace(/(這是|這個是|幫我看|幫我找|幫我|幫|給我看|給我|丟給我|傳給我|傳給|我要|我想|記一下|記起來|記錄|網址|網站|是多少|是什麼|請問|以後|下次|要回覆我|跟我說|告訴我|的)/g, ' ')
     .replace(/[，。！？、,.!?;；:：\s"'「」『』（）()【】\[\]#]/g, ' ')
     .trim()
     .split(/\s+/)
@@ -1344,7 +1347,7 @@ function extractMemoryKeywords(text) {
 
   const cleaned = raw
     .replace(/https?:\/\/[^\s，。！？、)）]+/ig, ' ')
-    .replace(/(這是|這個是|幫我|幫|記一下|記起來|記錄|網址|網站|連結|link|url|資料|筆記|是多少|是什麼|在哪|哪裡|請問|以後|下次|要回覆我|跟我說|告訴我|有沒有記|不用記了|不用記|不要記了|不要記|刪掉|刪除|忘掉|忘記|改成|改為|更新成|更新為|換成|換為|新的|的)/ig, ' ')
+    .replace(/(這是|這個是|幫我看|幫我找|幫我|幫|給我看|給我|丟給我|傳給我|傳給|我要|我想|找一下|查一下|看一下|記一下|記起來|記錄|網址|網站|連結|link|url|資料|筆記|是多少|是什麼|在哪|哪裡|請問|以後|下次|要回覆我|跟我說|告訴我|有沒有記|不用記了|不用記|不要記了|不要記|刪掉|刪除|忘掉|忘記|改成|改為|更新成|更新為|換成|換為|新的|的)/ig, ' ')
     .replace(/[，。！？、,.!?;；:：\s"'「」『』（）()【】\[\]#]/g, ' ')
     .trim();
 
@@ -1460,14 +1463,34 @@ async function answerUrlFromMemory(text) {
   const keywords = extractMemoryKeywords(text);
   if (keywords.length === 0) return null;
 
-  const notes = await findNotesByKeywords(keywords, 5);
+  const notes = await findNotesByKeywords(keywords, 8);
   const withUrls = notes
     .map((note) => ({ note, url: extractFirstUrl(note.content) }))
     .filter((item) => item.url);
   if (withUrls.length === 0) return null;
 
-  const best = withUrls[0].note;
-  return best.content;
+  // 同網址去重，全部回傳（香奈要的是「所有匯洲的網址」，不是只挑一個）
+  const seen = new Set();
+  const unique = [];
+  for (const item of withUrls) {
+    if (seen.has(item.url)) continue;
+    seen.add(item.url);
+    unique.push(item.note);
+  }
+  if (unique.length === 1) return unique[0].content;
+  return unique.map((note, i) => `${i + 1}. ${note.content}`).join('\n');
+}
+
+async function listAllUrlNotes() {
+  const { data } = await supabase
+    .from('xlan_notes')
+    .select('content, created_at')
+    .contains('tags', ['網址'])
+    .order('created_at', { ascending: false })
+    .limit(30);
+  const withUrls = (data || []).filter((note) => extractFirstUrl(note.content));
+  if (withUrls.length === 0) return '目前沒有記錄任何網址，把連結丟給我就會幫你記起來。';
+  return `🔗 你的常用連結（${withUrls.length}）：\n${withUrls.map((note, i) => `${i + 1}. ${note.content}`).join('\n')}`;
 }
 
 async function answerBusinessMemoryFromText(text) {
@@ -4381,6 +4404,8 @@ async function resolveDirectMemoryPreflight(text, intent = {}) {
     reply = await rememberCorrectionFromText(text);
   } else if (intent.intent === 'memory_save') {
     reply = await rememberUrlFromText(text);
+  } else if (intent.intent === 'url_list') {
+    reply = await listAllUrlNotes();
   } else if (intent.intent === 'memory_query') {
     reply = await answerUrlFromMemory(text) || await answerBusinessMemoryFromText(text);
   }
@@ -4394,7 +4419,7 @@ async function resolveDirectMemoryPreflight(text, intent = {}) {
     return [{ type: 'text', text: reply }];
   }
 
-  if (['memory_update', 'memory_delete', 'correction', 'memory_save', 'memory_query'].includes(intent.intent)) {
+  if (['memory_update', 'memory_delete', 'correction', 'memory_save', 'url_list', 'memory_query'].includes(intent.intent)) {
     console.log('direct_pre_claude_timing', {
       intent: intent.intent,
       elapsed_ms: Date.now() - startedAt,
