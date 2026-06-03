@@ -447,6 +447,10 @@ async function handleSimpleExpenseText(text, focusKey = '') {
   ];
 }
 
+function isBriefingCommand(text) {
+  return /^(盤點|任務盤點|幫我整理一下|幫我排一下|幫我排順序|排優先順序|今天要做什麼|今天先做什麼|先做什麼|先做哪個|哪個先做|我現在該做什麼|有什麼事|現在要做什麼|下一步|下一步做什麼|優先順序|今天重點)$/.test(String(text || '').trim());
+}
+
 function classifyTextIntent(text, context = {}) {
   const raw = String(text || '').trim();
   const mode = context.mode || 'direct';
@@ -461,7 +465,7 @@ function classifyTextIntent(text, context = {}) {
   if (/^記帳:[0-9a-f-]+:/i.test(raw)) return { intent: 'expense_action', confidence: 1, route: 'fast', reason: 'expense_callback' };
   if (/^(待辦|清單|檢查待辦|任務清單)$/.test(raw)) return { intent: 'todo_list', confidence: 1, route: 'fast', reason: 'todo_list_command' };
   if (parseTodoPlanningScope(raw)) return { intent: 'todo_planning', confidence: 1, route: 'fast', reason: 'todo_planning_question' };
-  if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(raw)) {
+  if (isBriefingCommand(raw)) {
     return { intent: 'briefing', confidence: 1, route: 'fast', reason: 'briefing_command' };
   }
   if (/^(工作報告|今天報告|今日報告|本週報告|這週報告|週報)$/.test(raw)) return { intent: 'work_report', confidence: 1, route: 'fast', reason: 'work_report_command' };
@@ -3679,6 +3683,38 @@ function buildTodoRecommendation(todos, stateMap, todayStr) {
   return `建議：目前最集中的工作是${topLane}，先挑一件 15 分鐘內能推進的處理。`;
 }
 
+function todoPriorityReason(todo, state = {}, todayStr) {
+  const status = state.status || '待處理';
+  if (state.due_date && state.due_date < todayStr) return '逾期';
+  if (state.due_date === todayStr) return '今天到期';
+  if (todo.priority === 'urgent') return '緊急';
+  if (status === '半完成') return '半完成可收尾';
+  if (status === '等待回覆') return '等待回覆';
+  if (status === '未完成') return '需要重排';
+  if (todoAgeDays(todo) >= 3) return `卡${todoAgeDays(todo)}天`;
+  return inferTodoWorkLane(todo);
+}
+
+function todoNextActionHint(todo, state = {}, todayStr) {
+  const status = state.status || '待處理';
+  if (state.due_date && state.due_date < todayStr) return '今天先處理或改期';
+  if (state.due_date === todayStr) return '今天收掉';
+  if (status === '等待回覆') return '補一句追進度';
+  if (status === '半完成') return '收尾或標完成';
+  if (status === '進行中') return '推進到半完成';
+  if (status === '未完成') return '確認是否保留';
+  if (todo.priority === 'urgent') return '先推進一步';
+  if (todoAgeDays(todo) >= 3) return '確認還要不要做';
+  return '安排一個下一步';
+}
+
+function formatSecretaryPlanLine(todo, state = {}, todayStr, index = 0) {
+  const prefix = index > 0 ? `${index}. ` : '';
+  const reason = todoPriorityReason(todo, state, todayStr);
+  const action = todoNextActionHint(todo, state, todayStr);
+  return `${prefix}${formatTodoLine(todo, state)}｜${reason}｜${action}`;
+}
+
 function todoAgeDays(todo) {
   if (!todo.created_at) return 0;
   return Math.floor((Date.now() - new Date(todo.created_at).getTime()) / 86400000);
@@ -3788,7 +3824,7 @@ async function buildTodoPlanningMessages(scope, focusKey = '') {
 
   const lines = fallback.slice(0, 8).map((todo, i) => {
     const state = stateMap.get(todo.id) || {};
-    return `${i + 1}. ${formatTodoLine(todo, state)}`;
+    return formatSecretaryPlanLine(todo, state, todayStr, i + 1);
   });
   const lead = matched.length > 0
     ? `${label}要看的待辦：`
@@ -3874,13 +3910,11 @@ async function buildSecretaryBriefingMessages(focusKey = '') {
 
   const line = (todo, i) => {
     const state = stateMap.get(todo.id) || {};
-    const pressure = todoPressureLabel(todo, state, todayStr);
-    return `${i + 1}. ${pressure ? `[${pressure}] ` : ''}${formatTodoLine(todo, state)}`;
+    return formatSecretaryPlanLine(todo, state, todayStr, i + 1);
   };
   const bullet = (todo) => {
     const state = stateMap.get(todo.id) || {};
-    const pressure = todoPressureLabel(todo, state, todayStr);
-    return `- ${pressure ? `[${pressure}] ` : ''}${formatTodoLine(todo, state)}`;
+    return `- ${formatSecretaryPlanLine(todo, state, todayStr)}`;
   };
   const sections = [
     summarizeTodoWorkLanes(todos),
@@ -4153,7 +4187,7 @@ async function handleGroupMessage(event) {
         return;
       }
 
-      if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(cleanedText)) {
+      if (isBriefingCommand(cleanedText)) {
         await replyMessage(event.replyToken, await buildSecretaryBriefingMessages(focusKey));
         return;
       }
@@ -4263,7 +4297,7 @@ async function handleDirectFastCommand(text, focusKey = '') {
   if (planningScope) {
     return buildTodoPlanningMessages(planningScope, focusKey);
   }
-  if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(text)) {
+  if (isBriefingCommand(text)) {
     return buildSecretaryBriefingMessages(focusKey);
   }
   if (/^(工作報告|今天報告|今日報告|本週報告|這週報告|週報)$/.test(text)) {
@@ -4475,7 +4509,7 @@ async function handleDirectMessage(event) {
     replyMessages = await buildExpenseSummaryReplyMessages('today', focusKey);
   } else if (/^(本週記帳摘要|本週帳務|本週收支|這週帳務|這週花多少)$/.test(text)) {
     replyMessages = await buildExpenseSummaryReplyMessages('this_week', focusKey);
-  } else if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(text)) {
+  } else if (isBriefingCommand(text)) {
     replyMessages = await buildSecretaryBriefingMessages(focusKey);
   } else if (/^(工作報告|今天報告|今日報告|本週報告|這週報告|週報)$/.test(text)) {
     const period = /本週|這週|週報/.test(text) ? 'this_week' : 'today';
