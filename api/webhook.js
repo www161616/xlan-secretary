@@ -3064,6 +3064,87 @@ async function buildSecretaryBriefingMessages() {
   return messages;
 }
 
+function getReportStartDate(period) {
+  const now = getTaipeiDate();
+  if (period === 'this_week') {
+    const day = now.getDay() || 7;
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate() - day + 1);
+  }
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
+function summarizeStatusCounts(todos, stateMap) {
+  const counts = new Map();
+  (todos || []).forEach((todo) => {
+    const status = stateMap.get(todo.id)?.status || '待處理';
+    counts.set(status, (counts.get(status) || 0) + 1);
+  });
+  const order = ['待處理', '進行中', '半完成', '等待回覆', '未完成'];
+  return order
+    .filter((status) => counts.get(status))
+    .map((status) => `${status}${counts.get(status)}件`)
+    .join('、') || '無未完成待辦';
+}
+
+function summarizeDoneWorkLanes(doneTodos) {
+  if (!doneTodos || doneTodos.length === 0) return '完成分布：目前沒有完成紀錄。';
+  const counts = new Map();
+  (doneTodos || []).forEach((todo) => {
+    const lane = inferTodoWorkLane(todo);
+    counts.set(lane, (counts.get(lane) || 0) + 1);
+  });
+  const lines = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([lane, count]) => `${lane}${count}件`)
+    .join('、');
+  return `完成分布：${lines}`;
+}
+
+async function buildWorkReportMessages(period = 'today') {
+  const label = period === 'this_week' ? '本週' : '今天';
+  const startDate = getReportStartDate(period);
+  const pending = await getPendingTodos(100);
+  const stateMap = await getTodoStateMap(pending);
+  const todayStr = formatDateYmd(getTaipeiDate());
+  const sorted = sortTodosForBriefing(pending, stateMap, todayStr);
+  const { data: doneTodos } = await supabase
+    .from('xlan_todos')
+    .select('text, source_message, source_person, project_name, priority, done_at')
+    .eq('done', true)
+    .gte('done_at', startDate.toISOString())
+    .order('done_at', { ascending: false })
+    .limit(50);
+  const expenses = await getExpenses(period);
+  const doneLines = (doneTodos || []).slice(0, 5).map((todo, i) => `${i + 1}. ${cleanTodoDisplayText(todo.text)}`).join('\n') || '（沒有完成紀錄）';
+  const pendingLines = sorted.slice(0, 5).map((todo, i) => `${i + 1}. ${formatTodoLine(todo, stateMap.get(todo.id))}`).join('\n') || '（沒有未完成待辦）';
+
+  const sections = [
+    `📊 ${label}工作報告`,
+    '',
+    `完成：${(doneTodos || []).length}件`,
+    `未完成：${pending.length}件`,
+    `狀態：${summarizeStatusCounts(pending, stateMap)}`,
+    '',
+    summarizeTodoWorkLanes(pending),
+    summarizeDoneWorkLanes(doneTodos || []),
+    buildTodoRecommendation(pending, stateMap, todayStr),
+    '',
+    `最近完成：\n${doneLines}`,
+    '',
+    `還要追蹤：\n${pendingLines}`,
+    '',
+    `${label}帳務：\n${summarizeExpensesForBriefing(expenses)}`,
+    '',
+    '可以直接點下面卡片處理未完成項目。',
+  ];
+
+  const messages = [{ type: 'text', text: sections.join('\n') }];
+  if (sorted.length > 0) messages.push(buildTodoActionFlex(sorted, stateMap));
+  messages.push(buildBriefingQuickActionFlex());
+  return messages;
+}
+
 async function listTodoReplyMessages() {
   const { data } = await supabase
     .from('xlan_todos')
@@ -3211,6 +3292,12 @@ async function handleGroupMessage(event) {
       const cleanedText = contentToAnalyze.replace(/@\S+/g, '').trim();
       if (!cleanedText) return;
 
+      if (/^(工作報告|今天報告|今日報告|本週報告|這週報告|週報)$/.test(cleanedText)) {
+        const period = /本週|這週|週報/.test(cleanedText) ? 'this_week' : 'today';
+        await replyMessage(event.replyToken, await buildWorkReportMessages(period));
+        return;
+      }
+
       const userId = event.source.userId || 'group_user';
       const { reply, flexMessages } = await chatWithClaude(userId, cleanedText, {
         mode: 'group',
@@ -3337,6 +3424,9 @@ async function handleDirectMessage(event) {
     replyMessages = await buildExpenseSummaryReplyMessages('this_week');
   } else if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(text)) {
     replyMessages = await buildSecretaryBriefingMessages();
+  } else if (/^(工作報告|今天報告|今日報告|本週報告|這週報告|週報)$/.test(text)) {
+    const period = /本週|這週|週報/.test(text) ? 'this_week' : 'today';
+    replyMessages = await buildWorkReportMessages(period);
   } else if (/^(待辦|清單|檢查待辦|任務清單)$/.test(text)) {
     replyMessages = await listTodoReplyMessages();
   } else if (/^待辦:[0-9a-f-]{32,36}:/i.test(text)) {
