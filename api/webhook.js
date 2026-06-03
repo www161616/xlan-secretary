@@ -1296,6 +1296,7 @@ function staffReportEnabled() {
 }
 
 const STAFF_REPORT_RECENT_IMAGE_MS = 10 * 60 * 1000;
+const STAFF_REPORT_ACTIVE_MS = 30 * 60 * 1000;
 
 function staffReportSourceAllowed(source) {
   if (!STAFF_REPORT_GROUP_ID) return true;
@@ -1311,6 +1312,18 @@ function shouldKeepStaffReportSession(text, session) {
   if (parseStaffProblemText(text)) return true;
   if (extractTrackingNoFromText(text)) return true;
   return Boolean(session.problem || session.manualTrackingNo);
+}
+
+function staffReportSessionActive(session) {
+  if (!session || session.active !== true) return false;
+  const ts = new Date(session.updated_at || session.activated_at || 0).getTime();
+  return Boolean(ts && Date.now() - ts <= STAFF_REPORT_ACTIVE_MS);
+}
+
+function deactivateStaffReportSession(session) {
+  return {
+    images: pruneStaffReportImages(session?.images || []),
+  };
 }
 
 function getStaffSourceKey(source) {
@@ -1694,8 +1707,12 @@ async function handleStaffReportEvent(event) {
       await replyMessage(event.replyToken, '已取消回報。');
       return true;
     }
+    if (isStaffTrigger) {
+      session.active = true;
+      session.activated_at = new Date().toISOString();
+    }
     const possibleManualTrackingNo = extractTrackingNoFromText(text);
-    const canContinueWaitingReport = Boolean(session.waitingForTrackingNo && possibleManualTrackingNo);
+    const canContinueWaitingReport = Boolean(session.waitingForTrackingNo && possibleManualTrackingNo && (!isGroup || staffReportSessionActive(session)));
     const groupTextWithoutKeyword = isGroup && !isStaffReportTrigger(text) && !canContinueWaitingReport;
     if (groupTextWithoutKeyword) return false;
     if (!isGroup && session.images.length > 0 && !shouldKeepStaffReportSession(text, session)) {
@@ -1728,6 +1745,14 @@ async function handleStaffReportEvent(event) {
   }
 
   if (event.message.type === 'image') {
+    if (isGroup && !staffReportSessionActive(session)) {
+      const safeSession = deactivateStaffReportSession(session);
+      safeSession.images.push({ messageId: event.message.id, createdAt: new Date().toISOString(), recentOnly: true });
+      safeSession.images = pruneStaffReportImages(safeSession.images);
+      await saveStaffReportSession(sourceKey, safeSession);
+      return false;
+    }
+
     if (!session.problem && !session.manualTrackingNo) {
       if (isGroup) {
         session.images.push({ messageId: event.message.id, createdAt: new Date().toISOString(), recentOnly: true });
