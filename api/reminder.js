@@ -52,6 +52,19 @@ function todoStateKey(todoId) {
   return `todo_state:${todoId}`;
 }
 
+function todoFocusKey(sourceKey) {
+  return `todo_focus:${sourceKey}`;
+}
+
+async function saveTodoFocus(sourceKey, todos, reason = '') {
+  const ids = (todos || []).map((todo) => todo?.id).filter(Boolean).slice(0, 10);
+  if (!sourceKey || ids.length === 0) return;
+  await supabase.from('xlan_kv').upsert({
+    key: todoFocusKey(sourceKey),
+    value: JSON.stringify({ ids, reason, updated_at: new Date().toISOString() }),
+  });
+}
+
 function parseTodoState(value) {
   if (!value) return {};
   try {
@@ -427,7 +440,7 @@ function timeToMinutes(timeStr) {
 }
 
 // --- 早安摘要（9點）---
-async function buildMorningSummary(now, todayStr) {
+async function buildMorningSummary(now, todayStr, focusKey = '') {
   const today = now.getDate();
   const thisMonth = now.getMonth() + 1;
   const weekdays = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
@@ -460,6 +473,7 @@ async function buildMorningSummary(now, todayStr) {
     const sorted = [...waiting, ...inProgress, ...urgent, ...important, ...normal]
       .filter((todo, index, arr) => arr.findIndex((item) => item.id === todo.id) === index);
     const top5 = sorted.slice(0, 5);
+    await saveTodoFocus(focusKey, top5, 'morning_summary');
     const lines = top5.map(t => `- ${formatTodoLine(t, stateMap.get(t.id))}`);
     let sec = `📋 待辦（共${todos.length}項）\n${lines.join('\n')}`;
     if (waiting.length > 0) sec += `\n🔵 等待回覆：${waiting.length}項`;
@@ -591,7 +605,7 @@ async function checkFinishedEvents(now, todayStr) {
 }
 
 // --- 自訂提醒 ---
-async function checkCustomReminders(now) {
+async function checkCustomReminders(now, focusKey = '') {
   const currentHour = now.getHours();
   const { data: kvData } = await supabase
     .from('xlan_kv').select('value').eq('key', 'custom_reminders').single();
@@ -621,6 +635,7 @@ async function checkCustomReminders(now) {
     const recommendation = buildTodoRecommendation(todos || [], stateMap, todayStr);
     const statusCheck = summarizeStatusCheckTodos(sorted, stateMap);
     const expenseCheck = await buildDailyExpenseCheck(todayStr);
+    await saveTodoFocus(focusKey, focus, 'custom_reminder');
     const messages = [
       { type: 'text', text: `📋 ${matched.label || matched.message || '提醒'}\n\n${workload}\n${recommendation}\n\n${pressure}\n${statusCheck ? `\n${statusCheck}\n` : ''}\n目前需要先看：\n${items || '（無待辦）'}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
     ];
@@ -649,6 +664,7 @@ async function checkCustomReminders(now) {
   const recommendation = buildTodoRecommendation(pendingTodos || [], stateMap, todayStr);
   const statusCheck = summarizeStatusCheckTodos(sortedPending, stateMap);
   const expenseCheck = await buildDailyExpenseCheck(todayStr);
+  await saveTodoFocus(focusKey, sortedPending, 'evening_summary');
 
   const messages = [
     { type: 'text', text: `🌙 今日總結\n\n今天完成了：\n${doneLines}\n\n${workload}\n${recommendation}\n\n${pressure}\n${statusCheck ? `\n${statusCheck}\n` : ''}\n還要追蹤：\n${pendingLines}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
@@ -660,7 +676,7 @@ async function checkCustomReminders(now) {
 }
 
 // --- 月底財務總結 ---
-async function buildMonthlySummary(now) {
+async function buildMonthlySummary(now, focusKey = '') {
   const y = now.getFullYear();
   const m = now.getMonth();
   const monthStart = new Date(y, m, 1).toISOString();
@@ -693,6 +709,7 @@ async function buildMonthlySummary(now) {
     .from('xlan_todos').select('*').eq('done', false)
     .order('created_at', { ascending: true }).limit(5);
   const stateMap = await getTodoStateMap(pending || []);
+  await saveTodoFocus(focusKey, pending || [], 'monthly_summary');
   const pendingLines = (pending || []).map(t => `- ${formatTodoLine(t, stateMap.get(t.id))}`).join('\n') || '（無）';
 
   return `📊 ${monthLabel}月財務總結\n\n💼 公司帳\n收入：NT$${bizIncome.toLocaleString()}\n支出：NT$${bizExpense.toLocaleString()}\n淨額：NT$${(bizIncome - bizExpense).toLocaleString()}\n\n👤 私人帳\n收入：NT$${perIncome.toLocaleString()}\n支出：NT$${perExpense.toLocaleString()}\n淨額：NT$${(perIncome - perExpense).toLocaleString()}\n\n✅ 本月完成待辦：${doneCount || 0}項\n🐛 本月修復Bug：${fixedCount || 0}項\n\n📋 未完成待辦（前5項）\n${pendingLines}`;
@@ -709,6 +726,7 @@ module.exports = async (req, res) => {
     }
 
     const ownerLineId = kvData.value;
+    const focusKey = `direct:${ownerLineId}`;
     const now = getTaipeiNow();
     const currentHour = now.getHours();
     const todayStr = getTodayStr(now);
@@ -716,7 +734,7 @@ module.exports = async (req, res) => {
 
     // 1. 早安摘要（9點）
     if (currentHour === 9) {
-      const morning = await buildMorningSummary(now, todayStr);
+      const morning = await buildMorningSummary(now, todayStr, focusKey);
       await pushMessage(ownerLineId, morning);
       sent.push('morning');
     }
@@ -736,7 +754,7 @@ module.exports = async (req, res) => {
     }
 
     // 4. 自訂提醒
-    const customMsg = await checkCustomReminders(now);
+    const customMsg = await checkCustomReminders(now, focusKey);
     if (customMsg) {
       await pushMessage(ownerLineId, customMsg);
       sent.push('custom');
@@ -745,7 +763,7 @@ module.exports = async (req, res) => {
     // 5. 月底財務總結（每月最後一天 21 點）
     const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
     if (now.getDate() === lastDay && currentHour === 21) {
-      const summary = await buildMonthlySummary(now);
+      const summary = await buildMonthlySummary(now, focusKey);
       await pushMessage(ownerLineId, summary);
       sent.push('monthly_summary');
     }

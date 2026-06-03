@@ -1860,6 +1860,19 @@ function todoStateKey(todoId) {
   return `todo_state:${todoId}`;
 }
 
+const TODO_FOCUS_TTL_MS = 2 * 60 * 60 * 1000;
+
+function todoFocusKey(sourceKey) {
+  return `todo_focus:${sourceKey}`;
+}
+
+function getTodoFocusSourceKey(event) {
+  if (event?.source?.type === 'group') return `group:${event.source.groupId}`;
+  if (event?.source?.type === 'room') return `room:${event.source.roomId}`;
+  if (event?.source?.type === 'user') return `direct:${event.source.userId}`;
+  return '';
+}
+
 function parseTodoState(value) {
   if (!value) return {};
   try {
@@ -1905,6 +1918,41 @@ async function saveTodoState(todoId, patch) {
 
 async function clearTodoState(todoId) {
   await supabase.from('xlan_kv').delete().eq('key', todoStateKey(todoId));
+}
+
+async function saveTodoFocus(sourceKey, todos, reason = '') {
+  const ids = (todos || []).map((todo) => todo?.id).filter(Boolean).slice(0, 10);
+  if (!sourceKey || ids.length === 0) return;
+  await supabase.from('xlan_kv').upsert({
+    key: todoFocusKey(sourceKey),
+    value: JSON.stringify({ ids, reason, updated_at: new Date().toISOString() }),
+  });
+}
+
+async function loadTodoFocus(sourceKey) {
+  if (!sourceKey) return [];
+  const { data } = await supabase.from('xlan_kv').select('value').eq('key', todoFocusKey(sourceKey)).single();
+  if (!data?.value) return [];
+
+  let focus;
+  try {
+    focus = JSON.parse(data.value);
+  } catch {
+    return [];
+  }
+
+  const updatedAt = new Date(focus.updated_at || 0).getTime();
+  if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > TODO_FOCUS_TTL_MS) return [];
+  const ids = Array.isArray(focus.ids) ? focus.ids.filter(Boolean).slice(0, 10) : [];
+  if (ids.length === 0) return [];
+
+  const { data: todos } = await supabase
+    .from('xlan_todos')
+    .select('*')
+    .eq('done', false)
+    .in('id', ids);
+  const todoMap = new Map((todos || []).map((todo) => [todo.id, todo]));
+  return ids.map((id) => todoMap.get(id)).filter(Boolean);
 }
 
 function cleanTodoDisplayText(text) {
@@ -2182,6 +2230,44 @@ async function resolveTodoActionByKeyword(keyword, action, actionLabel, options 
   return { result: await markTodoStatusById(best.todo.id, action), flexMessage: null };
 }
 
+async function resolveTodoActionFromFocus(sourceKey, action, actionLabel, options = {}) {
+  const focusedTodos = await loadTodoFocus(sourceKey);
+  if (focusedTodos.length === 0) return null;
+  if (focusedTodos.length === 1) {
+    const todoId = focusedTodos[0].id;
+    if (action === '完成') return { result: await completeTodoById(todoId), flexMessage: null };
+    if (action === '刪除') return { result: await deleteTodoById(todoId), flexMessage: null };
+    if (action === '延後') return { result: await postponeTodoById(todoId, options.dueText), flexMessage: null };
+    return { result: await markTodoStatusById(todoId, action), flexMessage: null };
+  }
+
+  const stateMap = await getTodoStateMap(focusedTodos);
+  return {
+    result: `你剛剛看的有幾件待辦，請直接點要${actionLabel}的那一件。`,
+    flexMessage: buildTodoCandidateActionFlex(focusedTodos, action, stateMap, options.dueText || ''),
+  };
+}
+
+async function resolveNaturalTodoAction(naturalTodoAction, sourceKey) {
+  if (!naturalTodoAction) return null;
+  const options = { dueText: naturalTodoAction.dueText || '' };
+  if (!naturalTodoAction.keyword) {
+    const focused = await resolveTodoActionFromFocus(
+      sourceKey,
+      naturalTodoAction.action,
+      naturalTodoAction.label,
+      options,
+    );
+    if (focused) return focused;
+  }
+  return resolveTodoActionByKeyword(
+    naturalTodoAction.keyword,
+    naturalTodoAction.action,
+    naturalTodoAction.label,
+    options,
+  );
+}
+
 function todoToolResultToMessages(result) {
   const messages = [];
   if (result?.flexMessage) messages.push(result.flexMessage);
@@ -2206,6 +2292,13 @@ function parseNaturalTodoAction(text) {
   }
   if (/^(未完成|還沒做|沒完成|今天沒做完)$/.test(raw)) {
     return { action: '未完成', label: '標記未完成', keyword: '' };
+  }
+  if (/^(明天再做|下週再處理)$/.test(raw)) {
+    return { action: '延後', label: '延後', keyword: '', dueText: raw.includes('下週') ? '下週一' : '明天' };
+  }
+  if (/^延後到(.+)$/.test(raw)) {
+    const match = raw.match(/^延後到(.+)$/);
+    return { action: '延後', label: '延後', keyword: '', dueText: match[1].trim() };
   }
 
   const postponeMatch = raw.match(/^(.+?)(?:延後到|改到|挪到|明天再做|下週再處理)(.+)?$/);
@@ -3173,7 +3266,7 @@ function buildBriefingQuickActionFlex() {
   };
 }
 
-async function buildSecretaryBriefingMessages() {
+async function buildSecretaryBriefingMessages(focusKey = '') {
   const todos = await getPendingTodos(50);
   const stateMap = await getTodoStateMap(todos);
   const todayStr = formatDateYmd(getTaipeiDate());
@@ -3217,7 +3310,10 @@ async function buildSecretaryBriefingMessages() {
   sections.push('\n你可以直接點下面卡片處理。');
 
   const messages = [{ type: 'text', text: sections.join('\n') }];
-  if (sorted.length > 0) messages.push(buildTodoActionFlex(sorted, stateMap));
+  if (sorted.length > 0) {
+    await saveTodoFocus(focusKey, sorted, 'secretary_briefing');
+    messages.push(buildTodoActionFlex(sorted, stateMap));
+  }
   messages.push(buildBriefingQuickActionFlex());
   return messages;
 }
@@ -3259,7 +3355,7 @@ function summarizeDoneWorkLanes(doneTodos) {
   return `完成分布：${lines}`;
 }
 
-async function buildWorkReportMessages(period = 'today') {
+async function buildWorkReportMessages(period = 'today', focusKey = '') {
   const label = period === 'this_week' ? '本週' : '今天';
   const startDate = getReportStartDate(period);
   const pending = await getPendingTodos(100);
@@ -3300,12 +3396,15 @@ async function buildWorkReportMessages(period = 'today') {
   ];
 
   const messages = [{ type: 'text', text: sections.join('\n') }];
-  if (sorted.length > 0) messages.push(buildTodoActionFlex(sorted, stateMap));
+  if (sorted.length > 0) {
+    await saveTodoFocus(focusKey, sorted, `work_report:${period}`);
+    messages.push(buildTodoActionFlex(sorted, stateMap));
+  }
   messages.push(buildBriefingQuickActionFlex());
   return messages;
 }
 
-async function listTodoReplyMessages() {
+async function listTodoReplyMessages(focusKey = '') {
   const { data } = await supabase
     .from('xlan_todos')
     .select('*')
@@ -3318,6 +3417,7 @@ async function listTodoReplyMessages() {
 
   const text = await listTodos();
   const stateMap = await getTodoStateMap(data);
+  await saveTodoFocus(focusKey, data, 'todo_list');
   return [
     { type: 'text', text },
     buildTodoActionFlex(data, stateMap),
@@ -3430,6 +3530,7 @@ async function saveOwnerLineId(userId) {
 // --- 群組訊息處理 ---
 async function handleGroupMessage(event) {
   const msgType = event.message.type;
+  const focusKey = getTodoFocusSourceKey(event);
 
   if (await handleStaffReportEvent(event)) return;
 
@@ -3450,22 +3551,25 @@ async function handleGroupMessage(event) {
       const quotedText = event.message.quotedMessage && event.message.quotedMessage.text;
       const contentToAnalyze = quotedText || (isTodoCommand ? stripGroupCommand(text, '待辦') : stripGroupHashTrigger(text));
       const cleanedText = contentToAnalyze.replace(/@\S+/g, '').trim();
-      if (!cleanedText) return;
+      if (!cleanedText) {
+        if (isTodoCommand) await replyMessage(event.replyToken, await listTodoReplyMessages(focusKey));
+        return;
+      }
+
+      if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(cleanedText)) {
+        await replyMessage(event.replyToken, await buildSecretaryBriefingMessages(focusKey));
+        return;
+      }
 
       if (/^(工作報告|今天報告|今日報告|本週報告|這週報告|週報)$/.test(cleanedText)) {
         const period = /本週|這週|週報/.test(cleanedText) ? 'this_week' : 'today';
-        await replyMessage(event.replyToken, await buildWorkReportMessages(period));
+        await replyMessage(event.replyToken, await buildWorkReportMessages(period, focusKey));
         return;
       }
 
       const naturalTodoAction = parseNaturalTodoAction(cleanedText);
       if (naturalTodoAction) {
-        const result = await resolveTodoActionByKeyword(
-          naturalTodoAction.keyword,
-          naturalTodoAction.action,
-          naturalTodoAction.label,
-          { dueText: naturalTodoAction.dueText || '' },
-        );
+        const result = await resolveNaturalTodoAction(naturalTodoAction, focusKey);
         const messages = todoToolResultToMessages(result);
         if (messages) await replyMessage(event.replyToken, messages);
         return;
@@ -3484,7 +3588,7 @@ async function handleGroupMessage(event) {
   }
 }
 
-async function handleDirectFastCommand(text) {
+async function handleDirectFastCommand(text, focusKey = '') {
   if (/^記帳:([0-9a-f-]+):分類:(.+)$/.test(text)) {
     const match = text.match(/^記帳:([0-9a-f-]+):分類:(.+)$/);
     return [{ type: 'text', text: await updateExpenseCategory(match[1], match[2].trim()) }];
@@ -3522,14 +3626,14 @@ async function handleDirectFastCommand(text) {
     return buildExpenseSummaryReplyMessages('this_week');
   }
   if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(text)) {
-    return buildSecretaryBriefingMessages();
+    return buildSecretaryBriefingMessages(focusKey);
   }
   if (/^(工作報告|今天報告|今日報告|本週報告|這週報告|週報)$/.test(text)) {
     const period = /本週|這週|週報/.test(text) ? 'this_week' : 'today';
-    return buildWorkReportMessages(period);
+    return buildWorkReportMessages(period, focusKey);
   }
   if (/^(待辦|清單|檢查待辦|任務清單)$/.test(text)) {
-    return listTodoReplyMessages();
+    return listTodoReplyMessages(focusKey);
   }
   if (/^待辦:[0-9a-f-]{32,36}:/i.test(text)) {
     const result = await handleTodoActionCommand(text);
@@ -3537,12 +3641,7 @@ async function handleDirectFastCommand(text) {
   }
   const naturalTodoAction = parseNaturalTodoAction(text);
   if (naturalTodoAction) {
-    const result = await resolveTodoActionByKeyword(
-      naturalTodoAction.keyword,
-      naturalTodoAction.action,
-      naturalTodoAction.label,
-      { dueText: naturalTodoAction.dueText || '' },
-    );
+    const result = await resolveNaturalTodoAction(naturalTodoAction, focusKey);
     return todoToolResultToMessages(result);
   }
   if (/^完成第(\d+)項$/.test(text)) {
@@ -3580,6 +3679,7 @@ async function handleDirectFastCommand(text) {
 async function handleDirectMessage(event) {
   const msgType = event.message.type;
   const userId = event.source.userId;
+  const focusKey = getTodoFocusSourceKey(event);
 
   startLoadingAnimation(userId, msgType === 'image' ? 30 : 20)
     .catch((err) => console.error('startLoadingAnimation error:', err));
@@ -3645,7 +3745,7 @@ async function handleDirectMessage(event) {
   const text = (event.message.text || '').trim();
   if (!text) return;
 
-  const fastReplyMessages = await handleDirectFastCommand(text);
+  const fastReplyMessages = await handleDirectFastCommand(text, focusKey);
   if (fastReplyMessages) {
     console.log('direct_fast_path', { text: text.slice(0, 24) });
     await replyMessage(event.replyToken, fastReplyMessages);
@@ -3698,12 +3798,12 @@ async function handleDirectMessage(event) {
   } else if (/^(本週記帳摘要|本週帳務|本週收支|這週帳務|這週花多少)$/.test(text)) {
     replyMessages = await buildExpenseSummaryReplyMessages('this_week');
   } else if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(text)) {
-    replyMessages = await buildSecretaryBriefingMessages();
+    replyMessages = await buildSecretaryBriefingMessages(focusKey);
   } else if (/^(工作報告|今天報告|今日報告|本週報告|這週報告|週報)$/.test(text)) {
     const period = /本週|這週|週報/.test(text) ? 'this_week' : 'today';
-    replyMessages = await buildWorkReportMessages(period);
+    replyMessages = await buildWorkReportMessages(period, focusKey);
   } else if (/^(待辦|清單|檢查待辦|任務清單)$/.test(text)) {
-    replyMessages = await listTodoReplyMessages();
+    replyMessages = await listTodoReplyMessages(focusKey);
   } else if (/^待辦:[0-9a-f-]{32,36}:/i.test(text)) {
     const result = await handleTodoActionCommand(text);
     replyMessages = [{ type: 'text', text: result || '這個待辦操作格式不正確。' }];
