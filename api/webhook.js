@@ -2182,6 +2182,53 @@ async function resolveTodoActionByKeyword(keyword, action, actionLabel, options 
   return { result: await markTodoStatusById(best.todo.id, action), flexMessage: null };
 }
 
+function todoToolResultToMessages(result) {
+  const messages = [];
+  if (result?.flexMessage) messages.push(result.flexMessage);
+  if (result?.result) messages.push({ type: 'text', text: result.result });
+  return messages.length > 0 ? messages : null;
+}
+
+function parseNaturalTodoAction(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  if (/^(完成|好了|處理好了|辦完了|ok|OK|已完成)$/.test(raw)) {
+    return { action: '完成', label: '完成', keyword: '' };
+  }
+  if (/^(等回覆|等待回覆|先等|等老闆|等廠商)$/.test(raw)) {
+    return { action: '等待回覆', label: '標記等待回覆', keyword: '' };
+  }
+  if (/^(做到一半|半完成|先做一半)$/.test(raw)) {
+    return { action: '半完成', label: '標記半完成', keyword: '' };
+  }
+  if (/^(進行中|正在做|處理中|已經開始)$/.test(raw)) {
+    return { action: '進行中', label: '標記進行中', keyword: '' };
+  }
+  if (/^(未完成|還沒做|沒完成|今天沒做完)$/.test(raw)) {
+    return { action: '未完成', label: '標記未完成', keyword: '' };
+  }
+
+  const postponeMatch = raw.match(/^(.+?)(?:延後到|改到|挪到|明天再做|下週再處理)(.+)?$/);
+  if (postponeMatch) {
+    const dueText = postponeMatch[2] || (raw.includes('明天') ? '明天' : raw.includes('下週') ? '下週一' : '');
+    return { action: '延後', label: '延後', keyword: postponeMatch[1].trim(), dueText };
+  }
+
+  const rules = [
+    { action: '完成', label: '完成', re: /^(.+?)(?:完成了|已完成|做好了|好了|處理好了|辦完了|ok了|OK了)$/ },
+    { action: '刪除', label: '刪除', re: /^(.+?)(?:不用做了|不用管了|取消|刪掉|刪除)$/ },
+    { action: '等待回覆', label: '標記等待回覆', re: /^(.+?)(?:先等|等老闆|等廠商|等回覆|等待回覆|對方還沒回)$/ },
+    { action: '半完成', label: '標記半完成', re: /^(.+?)(?:做到一半|先做一半|還沒完全好|半完成)$/ },
+    { action: '進行中', label: '標記進行中', re: /^(.+?)(?:正在做|處理中|已經開始|進行中)$/ },
+    { action: '未完成', label: '標記未完成', re: /^(.+?)(?:還沒做|沒完成|今天沒做完|未完成)$/ },
+  ];
+  for (const rule of rules) {
+    const match = raw.match(rule.re);
+    if (match) return { action: rule.action, label: rule.label, keyword: match[1].trim() };
+  }
+  return null;
+}
+
 // --- 處理 tool use 結果 ---
 async function handleToolUse(block, userMessage) {
   if (block.name === 'save_todo' && block.input.task) {
@@ -3411,6 +3458,19 @@ async function handleGroupMessage(event) {
         return;
       }
 
+      const naturalTodoAction = parseNaturalTodoAction(cleanedText);
+      if (naturalTodoAction) {
+        const result = await resolveTodoActionByKeyword(
+          naturalTodoAction.keyword,
+          naturalTodoAction.action,
+          naturalTodoAction.label,
+          { dueText: naturalTodoAction.dueText || '' },
+        );
+        const messages = todoToolResultToMessages(result);
+        if (messages) await replyMessage(event.replyToken, messages);
+        return;
+      }
+
       const userId = event.source.userId || 'group_user';
       const { reply, flexMessages } = await chatWithClaude(userId, cleanedText, {
         mode: 'group',
@@ -3474,6 +3534,16 @@ async function handleDirectFastCommand(text) {
   if (/^待辦:[0-9a-f-]{32,36}:/i.test(text)) {
     const result = await handleTodoActionCommand(text);
     return [{ type: 'text', text: result || '這個待辦操作格式不正確。' }];
+  }
+  const naturalTodoAction = parseNaturalTodoAction(text);
+  if (naturalTodoAction) {
+    const result = await resolveTodoActionByKeyword(
+      naturalTodoAction.keyword,
+      naturalTodoAction.action,
+      naturalTodoAction.label,
+      { dueText: naturalTodoAction.dueText || '' },
+    );
+    return todoToolResultToMessages(result);
   }
   if (/^完成第(\d+)項$/.test(text)) {
     const match = text.match(/^完成第(\d+)項$/);
