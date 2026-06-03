@@ -1018,6 +1018,36 @@ async function replyMessage(replyToken, messages) {
   }
 }
 
+async function startLoadingAnimation(chatId, loadingSeconds = 20) {
+  if (!chatId) return;
+  try {
+    const res = await fetch('https://api.line.me/v2/bot/chat/loading/start', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
+      },
+      body: JSON.stringify({
+        chatId,
+        loadingSeconds,
+      }),
+    });
+    if (!res.ok) {
+      console.error('LINE loading error:', await res.text());
+    }
+  } catch (err) {
+    console.error('LINE loading failed:', err.message);
+  }
+}
+
+function logEventTiming(label, startedAt, extra = {}) {
+  console.log('event_timing', {
+    label,
+    elapsed_ms: Date.now() - startedAt,
+    ...extra,
+  });
+}
+
 function extractFirstUrl(text) {
   const match = String(text || '').match(/https?:\/\/[^\s，。！？、)）]+/i);
   return match ? match[0] : '';
@@ -2641,6 +2671,7 @@ function addContextToUserContent(userContent, context, knowledgeContext = '') {
 }
 
 async function chatWithClaude(userId, userContent, context = {}) {
+  const chatStartedAt = Date.now();
   const { data: history } = await supabase
     .from('xlan_conversations')
     .select('role, content')
@@ -2662,11 +2693,18 @@ async function chatWithClaude(userId, userContent, context = {}) {
     tools: ALL_TOOLS,
     messages,
   });
+  console.log('claude_timing', {
+    phase: 'initial',
+    elapsed_ms: Date.now() - chatStartedAt,
+    mode: context.mode || 'direct',
+  });
 
   const flexMessages = [];
   const userMessageText = typeof userContent === 'string' ? userContent : '(圖片訊息)';
+  let toolUseRounds = 0;
 
   while (response.stop_reason === 'tool_use') {
+    toolUseRounds += 1;
     const toolBlocks = response.content.filter((b) => b.type === 'tool_use');
 
     const toolResults = [];
@@ -2691,6 +2729,13 @@ async function chatWithClaude(userId, userContent, context = {}) {
       tools: ALL_TOOLS,
       messages,
     });
+    console.log('claude_timing', {
+      phase: 'tool_round',
+      round: toolUseRounds,
+      elapsed_ms: Date.now() - chatStartedAt,
+      tool_count: toolBlocks.length,
+      mode: context.mode || 'direct',
+    });
   }
 
   const textBlock = response.content.find((b) => b.type === 'text');
@@ -2700,6 +2745,14 @@ async function chatWithClaude(userId, userContent, context = {}) {
     { user_id: userId, role: 'user', content: userMessageText },
     { user_id: userId, role: 'assistant', content: reply },
   ]);
+
+  console.log('claude_timing', {
+    phase: 'total',
+    elapsed_ms: Date.now() - chatStartedAt,
+    tool_rounds: toolUseRounds,
+    flex_count: flexMessages.length,
+    mode: context.mode || 'direct',
+  });
 
   return { reply, flexMessages };
 }
@@ -3351,6 +3404,9 @@ async function handleDirectMessage(event) {
   const msgType = event.message.type;
   const userId = event.source.userId;
 
+  startLoadingAnimation(userId, msgType === 'image' ? 30 : 20)
+    .catch((err) => console.error('startLoadingAnimation error:', err));
+
   // 儲存 owner LINE ID（首次私訊時 upsert）
   saveOwnerLineId(userId).catch((err) => console.error('saveOwnerLineId error:', err));
 
@@ -3560,6 +3616,7 @@ module.exports = async (req, res) => {
     const msgType = event.message.type;
     if (msgType !== 'text' && msgType !== 'image') continue;
 
+    const eventStartedAt = Date.now();
     try {
       if (event.source.type === 'group' || event.source.type === 'room') {
         await handleGroupMessage(event);
@@ -3573,6 +3630,11 @@ module.exports = async (req, res) => {
       } catch (replyErr) {
         console.error('Error reply failed:', replyErr);
       }
+    } finally {
+      logEventTiming('webhook_event', eventStartedAt, {
+        sourceType: event.source?.type,
+        messageType: msgType,
+      });
     }
   }
 
