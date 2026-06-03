@@ -1351,6 +1351,12 @@ function extractMemoryKeywords(text) {
   for (const part of cleaned.split(/\s+/)) {
     if (/^[A-Za-z0-9-]{2,}$/.test(part) || /[\u4e00-\u9fa5]{2,}/.test(part)) {
       keywords.push(part);
+      // \u9577\u4e2d\u6587\u7247\u8a9e\uff08\u5982\u300c\u4ec1\u5728\u5ee0\u5546\u767b\u5165\u5e33\u865f\u300d\uff09\u984d\u5916\u62bd\u524d 2~3 \u5b57\u7576\u4e3b\u9ad4\u95dc\u9375\u5b57\uff0c
+      // \u901a\u5e38\u662f\u5ee0\u5546/\u4e3b\u984c\u540d\uff0c\u907f\u514d\u6574\u4e32\u9023\u5728\u4e00\u8d77\u8ddf\u542b\u7a7a\u683c\u7684\u7b46\u8a18\u6bd4\u5c0d\u4e0d\u5230
+      if (/[\u4e00-\u9fa5]{4,}/.test(part)) {
+        keywords.push(part.slice(0, 2));
+        keywords.push(part.slice(0, 3));
+      }
     }
   }
 
@@ -1368,12 +1374,15 @@ function extractMemoryKeywords(text) {
 
 function scoreMemoryNote(note, keywords) {
   const content = String(note?.content || '');
+  const contentNoSpace = content.replace(/\s+/g, '');
   let score = 0;
   for (const keyword of keywords) {
     if (!keyword) continue;
-    if (content.includes(keyword)) score += keyword.length + 8;
-    const compactContent = content.toLowerCase();
-    const compactKeyword = String(keyword).toLowerCase();
+    const kwNoSpace = String(keyword).replace(/\s+/g, '');
+    // 忽略空白比對：存的筆記常有「仁在 廠商…」的空格，不該因此漏配
+    if (content.includes(keyword) || contentNoSpace.includes(kwNoSpace)) score += keyword.length + 8;
+    const compactContent = contentNoSpace.toLowerCase();
+    const compactKeyword = kwNoSpace.toLowerCase();
     if (compactContent.includes(compactKeyword)) score += keyword.length + 4;
   }
   if (extractFirstUrl(content)) score += 3;
