@@ -56,12 +56,24 @@ function todoFocusKey(sourceKey) {
   return `todo_focus:${sourceKey}`;
 }
 
+function expenseFocusKey(sourceKey) {
+  return `expense_focus:${sourceKey}`;
+}
+
 async function saveTodoFocus(sourceKey, todos, reason = '') {
   const ids = (todos || []).map((todo) => todo?.id).filter(Boolean).slice(0, 10);
   if (!sourceKey || ids.length === 0) return;
   await supabase.from('xlan_kv').upsert({
     key: todoFocusKey(sourceKey),
     value: JSON.stringify({ ids, reason, updated_at: new Date().toISOString() }),
+  });
+}
+
+async function saveExpenseFocus(sourceKey, expense) {
+  if (!sourceKey || !expense?.id) return;
+  await supabase.from('xlan_kv').upsert({
+    key: expenseFocusKey(sourceKey),
+    value: JSON.stringify({ id: expense.id, updated_at: new Date().toISOString() }),
   });
 }
 
@@ -401,7 +413,7 @@ function buildExpenseReminderFlex() {
   };
 }
 
-async function buildDailyExpenseCheck(todayStr) {
+async function buildDailyExpenseCheck(todayStr, focusKey = '') {
   const tomorrow = new Date(`${todayStr}T00:00:00+08:00`);
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowStr = getTodayStr(tomorrow);
@@ -415,6 +427,7 @@ async function buildDailyExpenseCheck(todayStr) {
   if (!expenses || expenses.length === 0) {
     return '💰 今日帳務\n今天還沒有記帳。若有現金支出、進貨、匯款，可以直接傳給我記。';
   }
+  await saveExpenseFocus(focusKey, expenses[0]);
 
   const sum = (items, type, account) => items
     .filter((e) => e.type === type && (!account || e.account === account))
@@ -634,7 +647,7 @@ async function checkCustomReminders(now, focusKey = '') {
     const workload = summarizeTodoWorkLanes(todos || []);
     const recommendation = buildTodoRecommendation(todos || [], stateMap, todayStr);
     const statusCheck = summarizeStatusCheckTodos(sorted, stateMap);
-    const expenseCheck = await buildDailyExpenseCheck(todayStr);
+    const expenseCheck = await buildDailyExpenseCheck(todayStr, focusKey);
     await saveTodoFocus(focusKey, focus, 'custom_reminder');
     const messages = [
       { type: 'text', text: `📋 ${matched.label || matched.message || '提醒'}\n\n${workload}\n${recommendation}\n\n${pressure}\n${statusCheck ? `\n${statusCheck}\n` : ''}\n目前需要先看：\n${items || '（無待辦）'}\n\n${expenseCheck}\n\n可以直接點下面卡片處理。` },
@@ -663,7 +676,7 @@ async function checkCustomReminders(now, focusKey = '') {
   const workload = summarizeTodoWorkLanes(pendingTodos || []);
   const recommendation = buildTodoRecommendation(pendingTodos || [], stateMap, todayStr);
   const statusCheck = summarizeStatusCheckTodos(sortedPending, stateMap);
-  const expenseCheck = await buildDailyExpenseCheck(todayStr);
+  const expenseCheck = await buildDailyExpenseCheck(todayStr, focusKey);
   await saveTodoFocus(focusKey, sortedPending, 'evening_summary');
 
   const messages = [
@@ -672,6 +685,44 @@ async function checkCustomReminders(now, focusKey = '') {
   const todoFlex = buildReminderTodoFlex(sortedPending, stateMap);
   if (todoFlex) messages.push(todoFlex);
   messages.push(buildExpenseReminderFlex());
+  return messages;
+}
+
+async function hasSentDaily(key) {
+  const { data } = await supabase.from('xlan_kv').select('value').eq('key', key).single();
+  return Boolean(data?.value);
+}
+
+async function markSentDaily(key) {
+  await supabase.from('xlan_kv').upsert({
+    key,
+    value: JSON.stringify({ sent_at: new Date().toISOString() }),
+  });
+}
+
+async function buildStuckTodoCheckMessages(now, todayStr, focusKey = '') {
+  const { data: todos } = await supabase
+    .from('xlan_todos')
+    .select('*')
+    .eq('done', false)
+    .order('created_at', { ascending: true })
+    .limit(80);
+  const stateMap = await getTodoStateMap(todos || []);
+  const targets = findTodosNeedingStatusCheck(todos || [], stateMap).slice(0, 8);
+  if (targets.length === 0) return null;
+
+  await saveTodoFocus(focusKey, targets, 'stuck_todo_check');
+  const lines = targets.map((todo, i) => {
+    const state = stateMap.get(todo.id) || {};
+    const age = todoStateAgeDays(state);
+    return `${i + 1}. ${formatTodoLine(todo, state)}（${state.status || '待處理'}已${age}天沒更新）`;
+  }).join('\n');
+
+  const messages = [
+    { type: 'text', text: `我幫你抓到幾件狀態卡住的待辦，點卡片更新一下：\n\n${lines}` },
+  ];
+  const todoFlex = buildReminderTodoFlex(targets, stateMap);
+  if (todoFlex) messages.push(todoFlex);
   return messages;
 }
 
@@ -760,7 +811,18 @@ module.exports = async (req, res) => {
       sent.push('custom');
     }
 
-    // 5. 月底財務總結（每月最後一天 21 點）
+    // 5. 主動追問卡住待辦（每天 15 點一次）
+    const stuckKey = `stuck_todo_check_sent:${todayStr}`;
+    if (currentHour === 15 && !(await hasSentDaily(stuckKey))) {
+      const stuckMsg = await buildStuckTodoCheckMessages(now, todayStr, focusKey);
+      if (stuckMsg) {
+        await pushMessage(ownerLineId, stuckMsg);
+        await markSentDaily(stuckKey);
+        sent.push('stuck_todo_check');
+      }
+    }
+
+    // 6. 月底財務總結（每月最後一天 21 點）
     const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
     if (now.getDate() === lastDay && currentHour === 21) {
       const summary = await buildMonthlySummary(now, focusKey);

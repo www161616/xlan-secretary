@@ -98,6 +98,49 @@ async function saveExpense({ amount, category, note, type, account }) {
   return data[0];
 }
 
+const EXPENSE_FOCUS_TTL_MS = 2 * 60 * 60 * 1000;
+
+function expenseFocusKey(sourceKey) {
+  return `expense_focus:${sourceKey}`;
+}
+
+async function saveExpenseFocus(sourceKey, expense) {
+  if (!sourceKey || !expense?.id) return;
+  await supabase.from('xlan_kv').upsert({
+    key: expenseFocusKey(sourceKey),
+    value: JSON.stringify({ id: expense.id, updated_at: new Date().toISOString() }),
+  });
+}
+
+async function clearExpenseFocus(sourceKey) {
+  if (!sourceKey) return;
+  await supabase.from('xlan_kv').delete().eq('key', expenseFocusKey(sourceKey));
+}
+
+async function loadExpenseFocus(sourceKey) {
+  if (!sourceKey) return null;
+  const { data } = await supabase.from('xlan_kv').select('value').eq('key', expenseFocusKey(sourceKey)).single();
+  if (!data?.value) return null;
+
+  let focus;
+  try {
+    focus = JSON.parse(data.value);
+  } catch {
+    return null;
+  }
+
+  const updatedAt = new Date(focus.updated_at || 0).getTime();
+  if (!focus.id || !Number.isFinite(updatedAt) || Date.now() - updatedAt > EXPENSE_FOCUS_TTL_MS) return null;
+
+  const { data: expense, error } = await supabase
+    .from('xlan_expenses')
+    .select('*')
+    .eq('id', focus.id)
+    .single();
+  if (error || !expense) return null;
+  return expense;
+}
+
 async function getExpenses(period) {
   const now = new Date();
   let startDate;
@@ -276,15 +319,49 @@ function buildExpenseQuickActionFlex(latestExpense, periodLabel = '今天') {
   };
 }
 
-async function buildExpenseSummaryReplyMessages(period = 'this_month') {
+async function buildExpenseSummaryReplyMessages(period = 'this_month', focusKey = '') {
   const text = await buildExpenseSummary(period);
   const expenses = await getExpenses(period);
   const label = { today: '今天', this_week: '本週', this_month: '本月' }[period] || '本月';
   const messages = [{ type: 'text', text }];
   if (expenses.length > 0) {
+    await saveExpenseFocus(focusKey, expenses[0]);
     messages.push(buildExpenseQuickActionFlex(expenses[0], label));
   }
   return messages;
+}
+
+async function resolveFocusedExpenseReply(text, sourceKey) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  const expense = await loadExpenseFocus(sourceKey);
+  if (!expense) return null;
+
+  if (/^(算公司|公司|公司帳|改公司|改成公司)$/.test(raw)) {
+    await saveExpenseFocus(sourceKey, expense);
+    return [{ type: 'text', text: await updateExpenseAccount(expense.id, 'business') }];
+  }
+  if (/^(算私人|私人|私人帳|個人|個人帳|改私人|改成私人)$/.test(raw)) {
+    await saveExpenseFocus(sourceKey, expense);
+    return [{ type: 'text', text: await updateExpenseAccount(expense.id, 'personal') }];
+  }
+  if (/^(分類|改分類)$/.test(raw)) {
+    await saveExpenseFocus(sourceKey, expense);
+    return [buildExpenseCategoryFlex(expense.id)];
+  }
+  if (/^(分類|改分類)(.+)$/.test(raw)) {
+    const match = raw.match(/^(分類|改分類)(.+)$/);
+    await saveExpenseFocus(sourceKey, expense);
+    return [{ type: 'text', text: await updateExpenseCategory(expense.id, match[2].trim()) }];
+  }
+  if (/^(刪掉|刪除|刪除這筆|取消這筆|記錯了|不要記)$/.test(raw)) {
+    const result = await deleteExpense(expense.id);
+    await clearExpenseFocus(sourceKey);
+    return [{ type: 'text', text: result }];
+  }
+
+  return null;
 }
 
 // --- LINE 下載圖片 ---
@@ -1381,6 +1458,46 @@ function isStaffReportTrigger(text) {
   return /[#＃]\s*回報/.test(String(text || '').trim());
 }
 
+function buildStaffReportGuideFlex() {
+  return {
+    type: 'flex',
+    altText: '員工回報流程',
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: [
+          { type: 'text', text: '員工回報', weight: 'bold', size: 'lg', color: '#111827' },
+          { type: 'text', text: '照順序補資料，小瀾會寫進 Google Sheet。', size: 'sm', color: '#6B7280', wrap: true },
+          {
+            type: 'box',
+            layout: 'vertical',
+            spacing: 'xs',
+            contents: [
+              { type: 'text', text: '1. 輸入 #回報 少3 / 破2 / 錯1', size: 'sm', color: '#374151', wrap: true },
+              { type: 'text', text: '2. 上傳運單照片，標籤要清楚', size: 'sm', color: '#374151', wrap: true },
+              { type: 'text', text: '3. 上傳問題照片，破損或少貨要看得到', size: 'sm', color: '#374151', wrap: true },
+            ],
+          },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          { type: 'button', height: 'sm', action: { type: 'message', label: '少3', text: '#回報 少3' } },
+          { type: 'button', height: 'sm', action: { type: 'message', label: '破2', text: '#回報 破2' } },
+          { type: 'button', height: 'sm', action: { type: 'message', label: '取消', text: '取消回報' } },
+        ],
+      },
+    },
+  };
+}
+
 async function loadStaffReportSession(sourceKey) {
   const { data } = await supabase.from('xlan_kv').select('value').eq('key', sourceKey).single();
   if (!data || !data.value) return { images: [] };
@@ -1609,7 +1726,10 @@ async function maybeProcessStaffReport(event, session, sourceKey) {
   if (!problem) return false;
 
   if (images.length < 1) {
-    await replyMessage(event.replyToken, '收到，請附運單照片。運單標籤和問題證據要拍清楚。');
+    await replyMessage(event.replyToken, [
+      { type: 'text', text: '收到，請附運單照片。運單標籤和問題證據要拍清楚。' },
+      buildStaffReportGuideFlex(),
+    ]);
     return true;
   }
 
@@ -1730,11 +1850,20 @@ async function handleStaffReportEvent(event) {
     if (!problem) {
       await saveStaffReportSession(sourceKey, session);
       if (manualTrackingNo) {
-        await replyMessage(event.replyToken, '收到運單號，請再輸入問題和數量，例如：少3、破2、錯1。');
+        await replyMessage(event.replyToken, [
+          { type: 'text', text: '收到運單號，請再輸入問題和數量，例如：少3、破2、錯1。' },
+          buildStaffReportGuideFlex(),
+        ]);
       } else if (isStaffTrigger && session.images.length > 0) {
-        await replyMessage(event.replyToken, '收到照片，請再輸入問題和數量，例如：少3、破2、錯1。');
+        await replyMessage(event.replyToken, [
+          { type: 'text', text: '收到照片，請再輸入問題和數量，例如：少3、破2、錯1。' },
+          buildStaffReportGuideFlex(),
+        ]);
       } else {
-        await replyMessage(event.replyToken, '請輸入問題和數量，並附運單照片。例如：#回報 少3。');
+        await replyMessage(event.replyToken, [
+          { type: 'text', text: '請輸入問題和數量，並附運單照片。例如：#回報 少3。' },
+          buildStaffReportGuideFlex(),
+        ]);
       }
       return true;
     }
@@ -1767,7 +1896,10 @@ async function handleStaffReportEvent(event) {
     await saveStaffReportSession(sourceKey, session);
 
     if (!session.problem) {
-      await replyMessage(event.replyToken, '收到照片，請再輸入問題和數量，例如：少3、破2、錯1。');
+      await replyMessage(event.replyToken, [
+        { type: 'text', text: '收到照片，請再輸入問題和數量，例如：少3、破2、錯1。' },
+        buildStaffReportGuideFlex(),
+      ]);
       return true;
     }
     return maybeProcessStaffReport(event, session, sourceKey);
@@ -2452,6 +2584,7 @@ async function handleToolUse(block, userMessage, context = {}) {
   if (block.name === 'save_expense') {
     try {
       const savedExpense = await saveExpense(block.input);
+      await saveExpenseFocus(focusKey, savedExpense);
       const flex = buildExpenseFlexMessage({
         id: savedExpense.id,
         amount: block.input.amount,
@@ -2475,6 +2608,7 @@ async function handleToolUse(block, userMessage, context = {}) {
     if (expenses.length === 0) {
       return { result: `${periodLabel}沒有任何收支記錄。`, flexMessage: null };
     }
+    await saveExpenseFocus(focusKey, expenses[0]);
     const totalIncome = expenses.filter((e) => e.type === 'income').reduce((s, e) => s + e.amount, 0);
     const totalExpense = expenses.filter((e) => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
     const details = expenses.map((e) => {
@@ -3627,6 +3761,12 @@ async function handleGroupMessage(event) {
         return;
       }
 
+      const focusedExpenseReply = await resolveFocusedExpenseReply(cleanedText, focusKey);
+      if (focusedExpenseReply) {
+        await replyMessage(event.replyToken, focusedExpenseReply);
+        return;
+      }
+
       const focusedShortReply = await resolveFocusedShortTodoReply(cleanedText, focusKey);
       if (focusedShortReply) {
         const messages = todoToolResultToMessages(focusedShortReply);
@@ -3685,13 +3825,13 @@ async function handleDirectFastCommand(text, focusKey = '') {
     return [{ type: 'text', text: await updateLatestExpenseCategory(match[1].trim()) }];
   }
   if (/^(本月記帳摘要|本月帳務|本月收支|這個月帳務|這個月花多少)$/.test(text)) {
-    return buildExpenseSummaryReplyMessages('this_month');
+    return buildExpenseSummaryReplyMessages('this_month', focusKey);
   }
   if (/^(今天記帳摘要|今天帳務|今天收支|今天花多少|今天花了多少|今日帳務)$/.test(text)) {
-    return buildExpenseSummaryReplyMessages('today');
+    return buildExpenseSummaryReplyMessages('today', focusKey);
   }
   if (/^(本週記帳摘要|本週帳務|本週收支|這週帳務|這週花多少)$/.test(text)) {
-    return buildExpenseSummaryReplyMessages('this_week');
+    return buildExpenseSummaryReplyMessages('this_week', focusKey);
   }
   if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(text)) {
     return buildSecretaryBriefingMessages(focusKey);
@@ -3706,6 +3846,10 @@ async function handleDirectFastCommand(text, focusKey = '') {
   if (/^待辦:[0-9a-f-]{32,36}:/i.test(text)) {
     const result = await handleTodoActionCommand(text);
     return [{ type: 'text', text: result || '這個待辦操作格式不正確。' }];
+  }
+  const focusedExpenseReply = await resolveFocusedExpenseReply(text, focusKey);
+  if (focusedExpenseReply) {
+    return focusedExpenseReply;
   }
   const focusedShortReply = await resolveFocusedShortTodoReply(text, focusKey);
   if (focusedShortReply) {
@@ -3865,11 +4009,11 @@ async function handleDirectMessage(event) {
     const match = text.match(/^最近一筆分類(.+)$/);
     replyMessages = [{ type: 'text', text: await updateLatestExpenseCategory(match[1].trim()) }];
   } else if (/^(本月記帳摘要|本月帳務|本月收支|這個月帳務|這個月花多少)$/.test(text)) {
-    replyMessages = await buildExpenseSummaryReplyMessages('this_month');
+    replyMessages = await buildExpenseSummaryReplyMessages('this_month', focusKey);
   } else if (/^(今天記帳摘要|今天帳務|今天收支|今天花多少|今天花了多少|今日帳務)$/.test(text)) {
-    replyMessages = await buildExpenseSummaryReplyMessages('today');
+    replyMessages = await buildExpenseSummaryReplyMessages('today', focusKey);
   } else if (/^(本週記帳摘要|本週帳務|本週收支|這週帳務|這週花多少)$/.test(text)) {
-    replyMessages = await buildExpenseSummaryReplyMessages('this_week');
+    replyMessages = await buildExpenseSummaryReplyMessages('this_week', focusKey);
   } else if (/^(盤點|任務盤點|幫我整理一下|今天要做什麼|今天先做什麼|我現在該做什麼|有什麼事|現在要做什麼)$/.test(text)) {
     replyMessages = await buildSecretaryBriefingMessages(focusKey);
   } else if (/^(工作報告|今天報告|今日報告|本週報告|這週報告|週報)$/.test(text)) {
