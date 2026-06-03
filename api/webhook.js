@@ -1966,17 +1966,84 @@ async function markTodoStatusByKeyword(keyword, status) {
   return `${todoStatusIcon(status)} 已標記${status}：「${cleanTodoDisplayText(best.todo.text)}」`;
 }
 
+async function getPendingTodoById(todoId) {
+  const { data } = await supabase
+    .from('xlan_todos')
+    .select('*')
+    .eq('id', todoId)
+    .eq('done', false)
+    .single();
+  return data || null;
+}
+
+async function completeTodoById(todoId) {
+  const todo = await getPendingTodoById(todoId);
+  if (!todo) return '找不到這件未完成待辦，可能已經完成或刪除了。';
+  await supabase
+    .from('xlan_todos')
+    .update({ done: true, done_at: new Date().toISOString() })
+    .eq('id', todo.id);
+  await clearTodoState(todo.id);
+  return `✅ 已完成：「${cleanTodoDisplayText(todo.text)}」`;
+}
+
+async function deleteTodoById(todoId) {
+  const todo = await getPendingTodoById(todoId);
+  if (!todo) return '找不到這件未完成待辦，可能已經完成或刪除了。';
+  await supabase.from('xlan_todos').delete().eq('id', todo.id);
+  await clearTodoState(todo.id);
+  return `🗑️ 已刪除：「${cleanTodoDisplayText(todo.text)}」`;
+}
+
+async function markTodoStatusById(todoId, status) {
+  const allowed = ['進行中', '半完成', '等待回覆', '未完成'];
+  if (!allowed.includes(status)) return '狀態只能是：進行中、半完成、等待回覆、未完成。';
+  const todo = await getPendingTodoById(todoId);
+  if (!todo) return '找不到這件未完成待辦，可能已經完成或刪除了。';
+  await saveTodoState(todo.id, { status });
+  return `${todoStatusIcon(status)} 已標記${status}：「${cleanTodoDisplayText(todo.text)}」`;
+}
+
+async function postponeTodoById(todoId, dueText) {
+  const dueDate = parseTodoDueDate(dueText);
+  if (!dueDate) return '要延後到什麼時候？例如：延後到明天、延後到6/5。';
+  const todo = await getPendingTodoById(todoId);
+  if (!todo) return '找不到這件未完成待辦，可能已經完成或刪除了。';
+  await saveTodoState(todo.id, { status: '待處理', due_date: dueDate });
+  return `⏳ 已延後到 ${dueDate}：「${cleanTodoDisplayText(todo.text)}」`;
+}
+
+async function handleTodoActionCommand(text) {
+  const match = String(text || '').match(/^待辦:([0-9a-f-]{32,36}):(完成|進行中|半完成|等待回覆|未完成|刪除|延後)(?::(.+))?$/i);
+  if (!match) return null;
+  const todoId = match[1];
+  const action = match[2];
+  const arg = match[3] || '';
+  if (action === '完成') return completeTodoById(todoId);
+  if (action === '刪除') return deleteTodoById(todoId);
+  if (action === '延後') return postponeTodoById(todoId, arg || '明天');
+  return markTodoStatusById(todoId, action);
+}
+
 // --- 處理 tool use 結果 ---
 async function handleToolUse(block, userMessage) {
   if (block.name === 'save_todo' && block.input.task) {
-    await supabase.from('xlan_todos').insert({
+    const { data: savedTodo, error } = await supabase.from('xlan_todos').insert({
       text: block.input.task,
       source_message: userMessage,
       priority: block.input.priority || 'normal',
       source_person: block.input.source_person || null,
-    });
+    }).select('*').single();
+    if (error) {
+      console.error('Save todo error:', error.message);
+      return { result: `待辦儲存失敗：${error.message}`, isError: true, flexMessage: null };
+    }
     const pLabel = { urgent: '🔴', important: '🟡', normal: '' }[block.input.priority || 'normal'];
-    return { result: `已存入待辦${pLabel}：${block.input.task}`, flexMessage: null };
+    const stateMap = savedTodo ? new Map([[savedTodo.id, { status: '待處理' }]]) : new Map();
+    return {
+      result: `已存入待辦${pLabel}：${block.input.task}`,
+      flexMessage: savedTodo ? buildTodoActionFlex([savedTodo], stateMap) : null,
+    };
   }
 
   if (block.name === 'complete_todo') {
@@ -2609,7 +2676,7 @@ function buildTodoActionFlex(todos, stateMap = new Map()) {
             style: 'primary',
             height: 'sm',
             color: '#16A34A',
-            action: { type: 'message', label: '完成', text: `完成第${n}項` },
+            action: { type: 'message', label: '完成', text: `待辦:${todo.id}:完成` },
           },
           {
             type: 'box',
@@ -2619,12 +2686,12 @@ function buildTodoActionFlex(todos, stateMap = new Map()) {
               {
                 type: 'button',
                 height: 'sm',
-                action: { type: 'message', label: '進行中', text: `進行中第${n}項` },
+                action: { type: 'message', label: '進行中', text: `待辦:${todo.id}:進行中` },
               },
               {
                 type: 'button',
                 height: 'sm',
-                action: { type: 'message', label: '半完成', text: `半完成第${n}項` },
+                action: { type: 'message', label: '半完成', text: `待辦:${todo.id}:半完成` },
               },
             ],
           },
@@ -2636,12 +2703,12 @@ function buildTodoActionFlex(todos, stateMap = new Map()) {
               {
                 type: 'button',
                 height: 'sm',
-                action: { type: 'message', label: '等回覆', text: `等待第${n}項` },
+                action: { type: 'message', label: '等回覆', text: `待辦:${todo.id}:等待回覆` },
               },
               {
                 type: 'button',
                 height: 'sm',
-                action: { type: 'message', label: '明天', text: `延後第${n}項到明天` },
+                action: { type: 'message', label: '明天', text: `待辦:${todo.id}:延後:明天` },
               },
             ],
           },
@@ -2653,13 +2720,13 @@ function buildTodoActionFlex(todos, stateMap = new Map()) {
               {
                 type: 'button',
                 height: 'sm',
-                action: { type: 'message', label: '未完成', text: `未完成第${n}項` },
+                action: { type: 'message', label: '未完成', text: `待辦:${todo.id}:未完成` },
               },
               {
                 type: 'button',
                 height: 'sm',
                 color: '#DC2626',
-                action: { type: 'message', label: '刪除', text: `刪除第${n}項` },
+                action: { type: 'message', label: '刪除', text: `待辦:${todo.id}:刪除` },
               },
             ],
           },
@@ -2941,6 +3008,12 @@ async function handleGroupMessage(event) {
     const text = event.message.text;
     if (!text) return;
 
+    if (/^待辦:[0-9a-f-]{32,36}:/i.test(text.trim())) {
+      const result = await handleTodoActionCommand(text.trim());
+      await replyMessage(event.replyToken, result || '這個待辦操作格式不正確。');
+      return;
+    }
+
     const hasHashTrigger = /^[#＃]/.test(text.trim());
     const isTodoCommand = /^[#＃]\s*待辦/.test(text);
 
@@ -3078,6 +3151,9 @@ async function handleDirectMessage(event) {
     replyMessages = await buildSecretaryBriefingMessages();
   } else if (/^(待辦|清單|檢查待辦|任務清單)$/.test(text)) {
     replyMessages = await listTodoReplyMessages();
+  } else if (/^待辦:[0-9a-f-]{32,36}:/i.test(text)) {
+    const result = await handleTodoActionCommand(text);
+    replyMessages = [{ type: 'text', text: result || '這個待辦操作格式不正確。' }];
   } else if (/^完成第(\d+)項$/.test(text)) {
     const match = text.match(/^完成第(\d+)項$/);
     const n = parseInt(match[1], 10);
