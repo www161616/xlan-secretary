@@ -2268,6 +2268,39 @@ async function resolveNaturalTodoAction(naturalTodoAction, sourceKey) {
   );
 }
 
+async function resolveFocusedShortTodoReply(text, sourceKey) {
+  const raw = String(text || '').trim();
+  if (!raw || !sourceKey) return null;
+
+  let action = null;
+  let label = '';
+  let dueText = '';
+
+  if (/^(明天|明天做|明天再做|明天處理|明天再處理)$/.test(raw)) {
+    action = '延後';
+    label = '延後';
+    dueText = '明天';
+  } else if (/^(後天|後天做|後天再做|後天處理)$/.test(raw)) {
+    action = '延後';
+    label = '延後';
+    dueText = '後天';
+  } else if (/^(下週|下周|下禮拜|下星期|下週再處理|下周再處理)$/.test(raw)) {
+    action = '延後';
+    label = '延後';
+    dueText = '下週一';
+  } else if (/^(\d{1,2}\/\d{1,2}|\d{1,2}月\d{1,2}日?)$/.test(raw)) {
+    action = '延後';
+    label = '延後';
+    dueText = raw;
+  } else if (/^(取消|刪掉|刪除|不用了|不用做了|不用管了)$/.test(raw)) {
+    action = '刪除';
+    label = '刪除';
+  }
+
+  if (!action) return null;
+  return resolveTodoActionFromFocus(sourceKey, action, label, { dueText });
+}
+
 function todoToolResultToMessages(result) {
   const messages = [];
   if (result?.flexMessage) messages.push(result.flexMessage);
@@ -3567,6 +3600,13 @@ async function handleGroupMessage(event) {
         return;
       }
 
+      const focusedShortReply = await resolveFocusedShortTodoReply(cleanedText, focusKey);
+      if (focusedShortReply) {
+        const messages = todoToolResultToMessages(focusedShortReply);
+        if (messages) await replyMessage(event.replyToken, messages);
+        return;
+      }
+
       const naturalTodoAction = parseNaturalTodoAction(cleanedText);
       if (naturalTodoAction) {
         const result = await resolveNaturalTodoAction(naturalTodoAction, focusKey);
@@ -3638,6 +3678,10 @@ async function handleDirectFastCommand(text, focusKey = '') {
   if (/^待辦:[0-9a-f-]{32,36}:/i.test(text)) {
     const result = await handleTodoActionCommand(text);
     return [{ type: 'text', text: result || '這個待辦操作格式不正確。' }];
+  }
+  const focusedShortReply = await resolveFocusedShortTodoReply(text, focusKey);
+  if (focusedShortReply) {
+    return todoToolResultToMessages(focusedShortReply);
   }
   const naturalTodoAction = parseNaturalTodoAction(text);
   if (naturalTodoAction) {
