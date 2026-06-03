@@ -483,6 +483,17 @@ function classifyTextIntent(text, context = {}) {
   if (/^(我的連結|常用連結|所有連結|所有網址|我的網址|連結清單|網址清單|連結列表|網址列表)$/.test(raw)) {
     return { intent: 'url_list', confidence: 1, route: 'memory', reason: 'url_list_command' };
   }
+  // 部署清單：列全部、記錄、查詢
+  if (/^(我的部署|所有部署|部署清單|部署列表|所有機器人|我的機器人|機器人清單|機器人列表)$/.test(raw)) {
+    return { intent: 'deploy_list', confidence: 1, route: 'memory', reason: 'deploy_list_command' };
+  }
+  if (/^(記部署|記錄部署|新增部署|加部署|登記部署|部署記錄)/.test(raw) ||
+      (/(部署|部屬)/.test(raw) && /^(記|記一下|幫我記|新增|加|登記)/.test(raw))) {
+    return { intent: 'todo_or_tool', confidence: 0.9, route: 'claude_tool', reason: 'deploy_save' };
+  }
+  if (/(部署|部屬)/.test(raw)) {
+    return { intent: 'deploy_query', confidence: 0.78, route: 'memory', reason: 'deploy_query' };
+  }
   if (/https?:\/\//i.test(raw)) return { intent: 'memory_save', confidence: 0.85, route: 'memory', reason: 'url_save' };
   // 明確的儲存意圖（記錄/記住/下次回傳）要先攔，否則含「帳號/密碼」會被下面的查詢規則搶走，變成吐舊筆記
   if (/(記錄|記住|記下|記一下|幫我記|先記|存起來|存一下)/.test(raw) ||
@@ -796,6 +807,14 @@ tags 根據內容自動分類，例如 ["業務","門市"]、["個人"]、["ERP"
 如果查到筆記，直接回答筆記內容；不要說「我沒有記到」。
 不要在已完成記錄或查詢後補充不相關提醒、加入群組說明或操作建議。
 
+【部署清單】
+香奈有很多機器人/系統，分散在 NAS、Vercel、GitHub、Cloudflare 等不同地方，部署方式也不一樣。
+當香奈說「記部署」「登記部署」或描述某台機器人部署在哪、程式碼在哪、怎麼改怎麼部署時，呼叫 save_deployment 記下來。
+盡量把 platform（平台）、code_location（程式碼位置）、deploy_method（部署/修改方式）、url（網址）都填齊；香奈沒講的欄位就留空，不要亂編。
+同一台機器人名稱再記一次會自動更新覆蓋，不會重複。
+當香奈問「X 部署在哪」「X 怎麼改」「列出所有機器人/部署」時呼叫 get_deployment（要列全部就 keyword 留空）。
+存完只回覆「📝 已記錄部署：{名稱}」或「✅ 已更新部署：{名稱}」，不要補充建議。
+
 【定期付款】
 當用戶提到「每個月」「每年」「固定」「定期」付款或費用，呼叫 save_recurring 儲存。
 存完回覆「🔁 已設定定期提醒：{名稱} 每月{N}號 NT$\{金額\}」。
@@ -1020,6 +1039,35 @@ const DELETE_NOTE_TOOL = {
   },
 };
 
+const SAVE_DEPLOYMENT_TOOL = {
+  name: 'save_deployment',
+  description: '記錄或更新一台機器人/系統的部署資訊。當香奈說「記部署」「這個機器人部署在...」「登記部署」並提供平台、程式碼位置、部署方式、網址等資訊時使用。同名會自動更新覆蓋。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: '機器人或系統名稱，例如「小瀾」「匯洲機器人」「集運系統」' },
+      platform: { type: 'string', description: '部署平台，例如 Vercel、NAS、Cloudflare、GitHub Pages、Render' },
+      code_location: { type: 'string', description: '程式碼位置，例如 GitHub repo 網址、NAS 路徑、本機資料夾' },
+      deploy_method: { type: 'string', description: '部署或修改方式，例如「push 到 main 自動部署」「NAS 手動重啟容器」「跑 deploy.sh」' },
+      url: { type: 'string', description: '線上網址或 Webhook，沒有可留空' },
+      note: { type: 'string', description: '其他備註，例如環境變數位置、注意事項' },
+    },
+    required: ['name'],
+  },
+};
+
+const GET_DEPLOYMENT_TOOL = {
+  name: 'get_deployment',
+  description: '查詢機器人/系統的部署資訊。香奈問「X 部署在哪」「X 怎麼改」「列出所有部署/機器人」時使用。keyword 留空代表列出全部。',
+  input_schema: {
+    type: 'object',
+    properties: {
+      keyword: { type: 'string', description: '機器人名稱關鍵字，例如「小瀾」「匯洲」；要列全部就留空' },
+    },
+    required: [],
+  },
+};
+
 const SAVE_RECURRING_TOOL = {
   name: 'save_recurring',
   description: '儲存定期付款或固定費用提醒。當用戶提到「每個月」「每年」「固定」「定期」付款時使用。',
@@ -1200,7 +1248,7 @@ const GET_PENDING_PAYABLES_TOOL = {
   input_schema: { type: 'object', properties: {} },
 };
 
-const ALL_TOOLS = [SAVE_TODO_TOOL, COMPLETE_TODO_TOOL, DELETE_TODO_TOOL, POSTPONE_TODO_TOOL, MARK_TODO_STATUS_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, UPDATE_NOTE_TOOL, DELETE_NOTE_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL, SAVE_VENDOR_TOOL, GET_VENDOR_TOOL, CREATE_PROJECT_TOOL, GET_PROJECT_STATUS_TOOL, GET_PENDING_BUGS_TOOL, GET_PENDING_PAYABLES_TOOL];
+const ALL_TOOLS = [SAVE_TODO_TOOL, COMPLETE_TODO_TOOL, DELETE_TODO_TOOL, POSTPONE_TODO_TOOL, MARK_TODO_STATUS_TOOL, CREATE_CALENDAR_EVENT_TOOL, SAVE_EXPENSE_TOOL, GET_EXPENSES_TOOL, SAVE_NOTE_TOOL, GET_NOTES_TOOL, UPDATE_NOTE_TOOL, DELETE_NOTE_TOOL, SAVE_DEPLOYMENT_TOOL, GET_DEPLOYMENT_TOOL, SAVE_RECURRING_TOOL, SET_REMINDER_TOOL, SAVE_BUG_TOOL, FIX_BUG_TOOL, GET_PRIORITY_TODOS_TOOL, SAVE_SHIPMENT_TOOL, ARRIVE_SHIPMENT_TOOL, GET_SHIPMENTS_TOOL, SAVE_PAYABLE_TOOL, SAVE_VENDOR_TOOL, GET_VENDOR_TOOL, CREATE_PROJECT_TOOL, GET_PROJECT_STATUS_TOOL, GET_PENDING_BUGS_TOOL, GET_PENDING_PAYABLES_TOOL];
 
 // --- LINE 簽名驗證 ---
 function validateSignature(body, signature) {
@@ -1491,6 +1539,97 @@ async function listAllUrlNotes() {
   const withUrls = (data || []).filter((note) => extractFirstUrl(note.content));
   if (withUrls.length === 0) return '目前沒有記錄任何網址，把連結丟給我就會幫你記起來。';
   return `🔗 你的常用連結（${withUrls.length}）：\n${withUrls.map((note, i) => `${i + 1}. ${note.content}`).join('\n')}`;
+}
+
+// --- 部署清單（記每台機器人的部署位置與方式）---
+function formatDeploymentContent({ name, platform, code_location, deploy_method, url, note }) {
+  const lines = [`🤖 ${String(name).trim()}`];
+  if (platform) lines.push(`平台：${platform}`);
+  if (code_location) lines.push(`程式碼：${code_location}`);
+  if (deploy_method) lines.push(`部署方式：${deploy_method}`);
+  if (url) lines.push(`網址：${url}`);
+  if (note) lines.push(`備註：${note}`);
+  return lines.join('\n');
+}
+
+async function getAllDeploymentNotes() {
+  const { data } = await supabase
+    .from('xlan_notes')
+    .select('id, content, created_at')
+    .contains('tags', ['部署'])
+    .order('created_at', { ascending: false })
+    .limit(30);
+  return data || [];
+}
+
+function formatDeploymentList(notes) {
+  return notes.map((n, i) => `【${i + 1}】\n${n.content}`).join('\n\n');
+}
+
+const DEPLOYMENT_FIELD_LABELS = {
+  平台: 'platform',
+  程式碼: 'code_location',
+  部署方式: 'deploy_method',
+  網址: 'url',
+  備註: 'note',
+};
+
+function parseDeploymentContent(content) {
+  const fields = {};
+  for (const line of String(content || '').split('\n')) {
+    const idx = line.indexOf('：');
+    if (idx === -1) continue;
+    const key = DEPLOYMENT_FIELD_LABELS[line.slice(0, idx).trim()];
+    if (key) fields[key] = line.slice(idx + 1).trim();
+  }
+  return fields;
+}
+
+async function saveDeployment(input) {
+  const name = String(input.name || '').trim();
+  if (!name) return '要記哪一台機器人的部署？請給我名稱。';
+  const nameKey = name.replace(/\s+/g, '');
+  const all = await getAllDeploymentNotes();
+  const existing = all.find((n) => String(n.content || '').split('\n')[0].replace(/[🤖\s]/g, '') === nameKey);
+
+  // 累加合併：只覆蓋這次有提到的欄位，其餘沿用舊資料，香奈才不用每次重打全部
+  const prev = existing ? parseDeploymentContent(existing.content) : {};
+  const merged = { name };
+  for (const key of ['platform', 'code_location', 'deploy_method', 'url', 'note']) {
+    const next = String(input[key] || '').trim();
+    merged[key] = next || prev[key] || '';
+  }
+  const content = formatDeploymentContent(merged);
+
+  if (existing) {
+    await supabase.from('xlan_notes').update({ content, tags: ['部署', name] }).eq('id', existing.id);
+    return `✅ 已更新部署：${name}`;
+  }
+  await supabase.from('xlan_notes').insert({ content, tags: ['部署', name] });
+  return `📝 已記錄部署：${name}`;
+}
+
+async function answerDeploymentFromMemory(text) {
+  const all = await getAllDeploymentNotes();
+  if (all.length === 0) return null;
+  const stop = ['部署', '部屬', '機器人', '在哪', '哪裡', '哪台', '怎麼', '如何', '資訊', '詳細', '詳情', '是什麼'];
+  const keywords = extractMemoryKeywords(text).filter((k) => !stop.includes(k));
+  if (keywords.length === 0) return formatDeploymentList(all);
+  const matched = all.filter((n) => {
+    const c = String(n.content || '').replace(/\s+/g, '');
+    return keywords.some((k) => c.includes(String(k).replace(/\s+/g, '')));
+  });
+  if (matched.length === 0) return null;
+  if (matched.length === 1) return matched[0].content;
+  return formatDeploymentList(matched);
+}
+
+async function listAllDeployments() {
+  const all = await getAllDeploymentNotes();
+  if (all.length === 0) {
+    return '目前還沒記任何機器人的部署。跟我說「記部署 小瀾，平台 Vercel，程式碼 github www161616/xlan-secretary，部署方式 push 到 main 自動部署，網址 https://...」就會幫你記起來。';
+  }
+  return `🤖 你的機器人部署（${all.length}）：\n\n${formatDeploymentList(all)}`;
 }
 
 async function answerBusinessMemoryFromText(text) {
@@ -2994,6 +3133,27 @@ async function handleToolUse(block, userMessage, context = {}) {
     }
   }
 
+  if (block.name === 'save_deployment') {
+    try {
+      return { result: await saveDeployment(block.input), flexMessage: null };
+    } catch (err) {
+      console.error('Save deployment error:', err.message);
+      return { result: `部署記錄失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
+  if (block.name === 'get_deployment') {
+    try {
+      const keyword = String(block.input.keyword || '').trim();
+      if (!keyword) return { result: await listAllDeployments(), flexMessage: null };
+      const reply = await answerDeploymentFromMemory(keyword);
+      return { result: reply || `找不到「${keyword}」的部署資訊。`, flexMessage: null };
+    } catch (err) {
+      console.error('Get deployment error:', err.message);
+      return { result: `查詢部署失敗：${err.message}`, isError: true, flexMessage: null };
+    }
+  }
+
   if (block.name === 'update_note') {
     try {
       const keyword = String(block.input.keyword || '').trim();
@@ -4406,6 +4566,10 @@ async function resolveDirectMemoryPreflight(text, intent = {}) {
     reply = await rememberUrlFromText(text);
   } else if (intent.intent === 'url_list') {
     reply = await listAllUrlNotes();
+  } else if (intent.intent === 'deploy_list') {
+    reply = await listAllDeployments();
+  } else if (intent.intent === 'deploy_query') {
+    reply = await answerDeploymentFromMemory(text);
   } else if (intent.intent === 'memory_query') {
     reply = await answerUrlFromMemory(text) || await answerBusinessMemoryFromText(text);
   }
@@ -4419,7 +4583,7 @@ async function resolveDirectMemoryPreflight(text, intent = {}) {
     return [{ type: 'text', text: reply }];
   }
 
-  if (['memory_update', 'memory_delete', 'correction', 'memory_save', 'url_list', 'memory_query'].includes(intent.intent)) {
+  if (['memory_update', 'memory_delete', 'correction', 'memory_save', 'url_list', 'deploy_list', 'deploy_query', 'memory_query'].includes(intent.intent)) {
     console.log('direct_pre_claude_timing', {
       intent: intent.intent,
       elapsed_ms: Date.now() - startedAt,
