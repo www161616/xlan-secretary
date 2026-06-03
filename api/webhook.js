@@ -338,11 +338,11 @@ async function resolveFocusedExpenseReply(text, sourceKey) {
   const expense = await loadExpenseFocus(sourceKey);
   if (!expense) return null;
 
-  if (/^(算公司|公司|公司帳|改公司|改成公司)$/.test(raw)) {
+  if (/^(算公司|公司|公司帳|改公司|改成公司|這筆算公司|這個算公司|這筆要算公司|這個要算公司|這筆改公司|這個改公司)$/.test(raw)) {
     await saveExpenseFocus(sourceKey, expense);
     return [{ type: 'text', text: await updateExpenseAccount(expense.id, 'business') }];
   }
-  if (/^(算私人|私人|私人帳|個人|個人帳|改私人|改成私人)$/.test(raw)) {
+  if (/^(算私人|私人|私人帳|個人|個人帳|改私人|改成私人|這筆算私人|這個算私人|這筆要算私人|這個要算私人|這筆改私人|這個改私人)$/.test(raw)) {
     await saveExpenseFocus(sourceKey, expense);
     return [{ type: 'text', text: await updateExpenseAccount(expense.id, 'personal') }];
   }
@@ -459,6 +459,9 @@ function classifyTextIntent(text, context = {}) {
   if (/https?:\/\//i.test(raw)) return { intent: 'memory_save', confidence: 0.85, route: 'memory', reason: 'url_save' };
   if (/網址|網站|連結|link|url|資料|在哪|哪裡|電話|帳號|密碼|有沒有記|規格|承諾/i.test(raw)) {
     return { intent: 'memory_query', confidence: 0.78, route: 'memory', reason: 'business_memory_query' };
+  }
+  if (/(以後|下次|之後|不要|別再|不能|不是|不對|錯了|應該|要改成|要當|不要當)/.test(raw)) {
+    return { intent: 'correction', confidence: 0.72, route: 'memory', reason: 'correction_language' };
   }
   if (/(提醒|每天\d{1,2}點|[0-9一二三四五六七八九十]+點叫我)/.test(raw)) return { intent: 'reminder', confidence: 0.75, route: 'claude_tool', reason: 'reminder_language' };
   if (/(幫我|記得|提醒我|確認|處理|安排|通知|打電話|問|追|做|買|付款|上架|拍照)/.test(raw)) {
@@ -1342,6 +1345,37 @@ async function rememberUrlFromText(text) {
   return `📝 已記錄：${keyword}`;
 }
 
+function parseCorrectionMemory(text) {
+  const raw = String(text || '').trim();
+  if (!raw || raw.length < 4) return null;
+  if (!/(以後|下次|之後|不要|別再|不能|不是|不對|錯了|應該|要改成|改成|算公司|算私人|要當|不要當)/.test(raw)) return null;
+  if (/^記帳:[0-9a-f-]+:/i.test(raw) || /^待辦:[0-9a-f-]{32,36}:/i.test(raw)) return null;
+  if (/^(刪掉|刪除|取消|不用了|不用做了|明天|後天|下週|算公司|算私人|分類.+)$/.test(raw)) return null;
+
+  const compact = raw
+    .replace(/^小瀾[，,：:\s]*/i, '')
+    .replace(/^(你|妳)(又)?/g, '')
+    .trim();
+  if (compact.length < 4) return null;
+
+  const keywords = extractMemoryKeywords(compact).filter((keyword) => !['不要', '不是', '以後', '下次'].includes(keyword));
+  const keywordText = keywords.length > 0 ? ` 關鍵字：${keywords.join('、')}` : '';
+  return {
+    content: `修正規則：${compact}${keywordText}`,
+    keywords,
+  };
+}
+
+async function rememberCorrectionFromText(text) {
+  const correction = parseCorrectionMemory(text);
+  if (!correction) return null;
+  await supabase.from('xlan_notes').insert({
+    content: correction.content,
+    tags: ['修正規則'],
+  });
+  return '我記住這個修正了，下次遇到類似情況會照這個規則判斷。';
+}
+
 async function answerUrlFromMemory(text) {
   if (!/網址|網站|連結|link|url/i.test(text)) return null;
   const keywords = extractMemoryKeywords(text);
@@ -1438,9 +1472,32 @@ async function getRelevantNotesForContext(text) {
   return findNotesByKeywords(keywords, 5);
 }
 
+async function getRecentCorrectionRules(text, limit = 5) {
+  const keywords = extractMemoryKeywords(text);
+  let query = supabase
+    .from('xlan_notes')
+    .select('content, tags, created_at')
+    .ilike('content', '%修正規則%')
+    .order('created_at', { ascending: false })
+    .limit(12);
+  const { data } = await query;
+  const notes = data || [];
+  if (keywords.length === 0) return notes.slice(0, limit);
+  return notes
+    .map((note) => ({ note, score: scoreMemoryNote(note, keywords) }))
+    .sort((a, b) => b.score - a.score || new Date(b.note.created_at || 0) - new Date(a.note.created_at || 0))
+    .map((item) => item.note)
+    .slice(0, limit);
+}
+
 async function buildAgentKnowledgeContext(userContent) {
   const userText = typeof userContent === 'string' ? userContent : '';
   const sections = [];
+
+  const correctionRules = await getRecentCorrectionRules(userText, 5);
+  if (correctionRules.length > 0) {
+    sections.push(`香奈修正過的規則：\n${correctionRules.map((n, i) => `${i + 1}. ${n.content}`).join('\n')}`);
+  }
 
   const notes = await getRelevantNotesForContext(userText);
   if (notes.length > 0) {
@@ -3949,6 +4006,12 @@ async function handleGroupMessage(event) {
         return;
       }
 
+      const correctionMemory = await rememberCorrectionFromText(cleanedText);
+      if (correctionMemory) {
+        await replyMessage(event.replyToken, correctionMemory);
+        return;
+      }
+
       const userId = event.source.userId || 'group_user';
       const { reply, flexMessages } = await chatWithClaude(userId, cleanedText, {
         mode: 'group',
@@ -4147,14 +4210,17 @@ async function handleDirectMessage(event) {
   let replyMessages;
   const updatedUrlMemory = await updateUrlMemoryFromText(text);
   const deletedNote = updatedUrlMemory ? null : await deleteNoteFromText(text);
-  const rememberedUrl = (updatedUrlMemory || deletedNote) ? null : await rememberUrlFromText(text);
-  const memoryUrlAnswer = (updatedUrlMemory || deletedNote || rememberedUrl) ? null : await answerUrlFromMemory(text);
-  const businessMemoryAnswer = (updatedUrlMemory || deletedNote || rememberedUrl || memoryUrlAnswer) ? null : await answerBusinessMemoryFromText(text);
+  const correctionMemory = (updatedUrlMemory || deletedNote) ? null : await rememberCorrectionFromText(text);
+  const rememberedUrl = (updatedUrlMemory || deletedNote || correctionMemory) ? null : await rememberUrlFromText(text);
+  const memoryUrlAnswer = (updatedUrlMemory || deletedNote || correctionMemory || rememberedUrl) ? null : await answerUrlFromMemory(text);
+  const businessMemoryAnswer = (updatedUrlMemory || deletedNote || correctionMemory || rememberedUrl || memoryUrlAnswer) ? null : await answerBusinessMemoryFromText(text);
 
   if (updatedUrlMemory) {
     replyMessages = [{ type: 'text', text: updatedUrlMemory }];
   } else if (deletedNote) {
     replyMessages = [{ type: 'text', text: deletedNote }];
+  } else if (correctionMemory) {
+    replyMessages = [{ type: 'text', text: correctionMemory }];
   } else if (rememberedUrl) {
     replyMessages = [{ type: 'text', text: rememberedUrl }];
   } else if (memoryUrlAnswer) {
