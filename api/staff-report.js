@@ -13,6 +13,7 @@ const STAFF_REPORT_IMAGE_FOLDER_ID = process.env.STAFF_REPORT_IMAGE_FOLDER_ID;
 const STAFF_REPORT_SHEET_NAME = process.env.STAFF_REPORT_SHEET_NAME || '員工問題回報';
 const STAFF_REPORT_ORDER_SHEET_NAME = process.env.STAFF_REPORT_ORDER_SHEET_NAME || '所有訂單';
 const STAFF_LIFF_CHANNEL_ID = process.env.STAFF_LIFF_CHANNEL_ID; // 選填：有設就驗證 LIFF idToken
+const STAFF_LIFF_ID = process.env.STAFF_LIFF_ID; // 給前端 staff.html 初始化用
 
 const VALID_TYPES = ['少貨', '破損', '錯貨', '多貨', '未到貨', '其他'];
 
@@ -266,6 +267,11 @@ async function readJsonBody(req) {
 module.exports = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
+  // 前端開啟表單時先 GET 拿 LIFF ID（避免 liff.state 包住網址參數讀不到）
+  if (req.method === 'GET') {
+    res.status(200).json({ ok: true, liffId: (STAFF_LIFF_ID || '').trim() });
+    return;
+  }
   if (req.method !== 'POST') {
     res.status(405).json({ ok: false, error: 'Method Not Allowed' });
     return;

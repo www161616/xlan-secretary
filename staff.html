@@ -158,7 +158,6 @@
 <script>
 (function(){
   var qs = new URLSearchParams(location.search);
-  var LIFF_ID = qs.get('liff') || 'PUT_STAFF_LIFF_ID_HERE';
   var GROUP_ID = qs.get('g') || '';
   var API_URL = '/api/staff-report';
 
@@ -173,20 +172,35 @@
   function hide(id){ el(id).classList.add('hidden'); }
 
   // ---- 啟動 ----
-  liff.init({ liffId: LIFF_ID }).then(function(){
-    if (!liff.isLoggedIn()) { liff.login(); return; }
-    var p = liff.getProfile().catch(function(){ return null; });
-    var idt = Promise.resolve(liff.getIDToken && liff.getIDToken());
-    return Promise.all([p, idt]).then(function(arr){
-      state.profile = arr[0];
-      state.idToken = arr[1] || '';
-      el('who').textContent = state.profile ? ('回報人：' + state.profile.displayName) : '';
-      hide('boot'); show('form'); show('submitBar');
+  // 先跟後端拿 LIFF ID（單一來源＝STAFF_LIFF_ID）再 init。
+  // 不能直接讀網址 ?liff=，因為 LIFF 開啟時參數會被包進 liff.state，init 前讀不到。
+  fetch(API_URL, { method:'GET' })
+    .then(function(r){ return r.json(); })
+    .then(function(cfg){
+      var liffId = String((cfg && cfg.liffId) || qs.get('liff') || '').trim();
+      if (!liffId) throw new Error('後端沒有設定 LIFF ID（STAFF_LIFF_ID）');
+      return liff.init({ liffId: liffId });
+    })
+    .then(function(){
+      if (!liff.isLoggedIn()) { liff.login(); return; }
+      // 群組 ID 用 LIFF context 取，比網址參數可靠
+      try {
+        var ctx = liff.getContext();
+        if (ctx && (ctx.groupId || ctx.roomId)) GROUP_ID = ctx.groupId || ctx.roomId;
+      } catch (e) {}
+      var p = liff.getProfile().catch(function(){ return null; });
+      var idt = Promise.resolve(liff.getIDToken && liff.getIDToken());
+      return Promise.all([p, idt]).then(function(arr){
+        state.profile = arr[0];
+        state.idToken = arr[1] || '';
+        el('who').textContent = state.profile ? ('回報人：' + state.profile.displayName) : '';
+        hide('boot'); show('form'); show('submitBar');
+      });
+    })
+    .catch(function(e){
+      el('boot').innerHTML = '⚠️ 載入失敗：' + (e && e.message ? e.message : e) +
+        '<br><br>請確認這是從 LINE 開啟，或 LIFF 設定正確。';
     });
-  }).catch(function(e){
-    el('boot').innerHTML = '⚠️ 載入失敗：' + (e && e.message ? e.message : e) +
-      '<br><br>請確認這是從 LINE 開啟，或 LIFF 設定正確。';
-  });
 
   // ---- 問題類型 ----
   el('typeGrid').addEventListener('click', function(e){
