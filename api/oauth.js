@@ -3,10 +3,24 @@
 // 需在 Google Cloud Console 的 OAuth 用戶端「已授權的重新導向 URI」加入：
 //   https://xlan-secretary-rqhb.vercel.app/api/oauth
 const { google } = require('googleapis');
+const { createClient } = require('@supabase/supabase-js');
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const REDIRECT_URI = 'https://xlan-secretary-rqhb.vercel.app/api/oauth';
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY) ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+async function storeRefreshToken(rt) {
+  if (!supabase) return false;
+  try {
+    const { error } = await supabase.from('xlan_kv').upsert({ key: 'google_refresh_token', value: rt });
+    return !error;
+  } catch {
+    return false;
+  }
+}
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar',
   'https://www.googleapis.com/auth/spreadsheets',
@@ -66,11 +80,16 @@ module.exports = async (req, res) => {
         <p>通常是因為這個帳號之前已經授權過。請到 <a href="https://myaccount.google.com/permissions" target="_blank">Google 帳號的第三方存取</a> 移除這個 App 的授權，再回來 <a href="/api/oauth">重試一次</a>。</p>`));
       return;
     }
+    const stored = await storeRefreshToken(rt);
+    const storedMsg = stored
+      ? '<p style="color:#16A34A;font-weight:700">✅ 已自動存進系統，不用再貼到 Vercel、也不用重新部署，馬上就生效！</p>'
+      : '<p style="color:#DC2626">⚠️ 自動存檔失敗，請改用下面手動方式：把整串貼到 Vercel 的 <code>GOOGLE_REFRESH_TOKEN</code> 覆蓋舊值、存檔後重新部署。</p>';
     res.status(200).send(page('新鑰匙', `
-      <h2>✅ 拿到新鑰匙了！</h2>
-      <p>把下面<b>整串</b>複製，貼到 Vercel 的環境變數 <code>GOOGLE_REFRESH_TOKEN</code>（覆蓋舊的），存檔後重新部署。</p>
-      <textarea readonly onclick="this.select()">${rt}</textarea>
-      <p class="muted">貼好、重新部署後，這個頁面就可以關了。</p>`));
+      <h2>✅ 授權成功！</h2>
+      ${storedMsg}
+      <details><summary class="muted">（備用）手動貼到 Vercel 用的鑰匙</summary>
+      <textarea readonly onclick="this.select()">${rt}</textarea></details>
+      <p class="muted">完成了，這個頁面可以關了。回去跟小瀾說一聲。</p>`));
   } catch (e) {
     const detail = e?.response?.data?.error_description || e?.response?.data?.error || e?.message || String(e);
     res.setHeader('Content-Type', 'text/html; charset=utf-8');

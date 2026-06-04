@@ -21,12 +21,34 @@ const GOOGLE_VISION_API_KEY = process.env.GOOGLE_VISION_API_KEY;
 const STAFF_LIFF_CHANNEL_ID = process.env.STAFF_LIFF_CHANNEL_ID; // 選填：有設就驗證 LIFF idToken
 const STAFF_LIFF_ID = process.env.STAFF_LIFF_ID; // 給前端 staff.html 初始化用
 
+const { createClient } = require('@supabase/supabase-js');
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY) ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
 const VALID_TYPES = ['少貨', '破損', '錯貨', '多貨', '未到貨', '其他'];
+
+// Refresh token：優先讀 Supabase（xlan_kv 的 google_refresh_token），讀不到才用環境變數。
+// 這樣 /api/oauth 重新授權後，不用改 Vercel、也不用重新部署就即時生效。
+let RESOLVED_REFRESH_TOKEN = GOOGLE_REFRESH_TOKEN;
+let REFRESH_TOKEN_SOURCE = 'env';
+async function resolveRefreshToken() {
+  if (!supabase) return;
+  try {
+    const { data } = await supabase.from('xlan_kv').select('value').eq('key', 'google_refresh_token').single();
+    if (data && data.value) {
+      RESOLVED_REFRESH_TOKEN = String(data.value).trim();
+      REFRESH_TOKEN_SOURCE = 'supabase';
+    }
+  } catch (e) {
+    // 讀不到就維持環境變數值
+  }
+}
 
 // --- Google clients ---
 function getGoogleOAuthClient() {
   const oauth2Client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
-  oauth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
+  oauth2Client.setCredentials({ refresh_token: RESOLVED_REFRESH_TOKEN });
   return oauth2Client;
 }
 function getSheetsClient() {
@@ -356,6 +378,7 @@ module.exports = async (req, res) => {
   if (req.method === 'GET') {
     let googleAuth = 'untested';
     if (req.url && req.url.includes('diag')) {
+      await resolveRefreshToken();
       try {
         const c = getGoogleOAuthClient();
         const t = await c.getAccessToken();
@@ -368,6 +391,7 @@ module.exports = async (req, res) => {
       ok: true,
       liffId: (STAFF_LIFF_ID || '').trim(),
       googleAuth,
+      tokenSource: REFRESH_TOKEN_SOURCE,
       spreadsheetIdTail: STAFF_REPORT_SPREADSHEET_ID.slice(-6),
       // 診斷用：只回報變數有沒有設（true/false），不洩漏值
       env: {
@@ -394,6 +418,7 @@ module.exports = async (req, res) => {
     return;
   }
   try {
+    await resolveRefreshToken();
     const body = await readJsonBody(req);
     if (body.arrived === undefined || body.arrived === null) {
       res.status(400).json({ ok: false, error: '請先選「貨到了嗎」' });
