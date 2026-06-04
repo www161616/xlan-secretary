@@ -368,6 +368,7 @@ module.exports = async (req, res) => {
       ok: true,
       liffId: (STAFF_LIFF_ID || '').trim(),
       googleAuth,
+      clientId: process.env.GOOGLE_CLIENT_ID || '',
       spreadsheetIdTail: STAFF_REPORT_SPREADSHEET_ID.slice(-6),
       // 診斷用：只回報變數有沒有設（true/false），不洩漏值
       env: {
