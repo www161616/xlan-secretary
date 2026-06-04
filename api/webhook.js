@@ -5088,6 +5088,22 @@ async function handleDirectMessage(event) {
 // --- Vercel Serverless Handler ---
 module.exports = async (req, res) => {
   if (req.method === 'GET') {
+    if (req.url && req.url.includes('diag')) {
+      // 唯讀診斷：只回報變數有沒有設（true/false），不洩漏值
+      return res.status(200).json({
+        ok: true,
+        where: 'webhook',
+        env: {
+          spreadsheet: !!process.env.STAFF_REPORT_SPREADSHEET_ID,
+          vision: !!process.env.GOOGLE_VISION_API_KEY,
+          folder: !!process.env.STAFF_REPORT_IMAGE_FOLDER_ID,
+          sheetName: !!process.env.STAFF_REPORT_SHEET_NAME,
+          liff: !!process.env.STAFF_LIFF_ID,
+          refresh: !!process.env.GOOGLE_REFRESH_TOKEN,
+          anthropic: !!process.env.ANTHROPIC_API_KEY,
+        },
+      });
+    }
     return res.status(200).send('xlan-secretary is running.');
   }
 
