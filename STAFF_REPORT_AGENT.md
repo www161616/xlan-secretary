@@ -2,32 +2,28 @@
 
 這個功能接在既有的小瀾秘書 LINE Bot 裡。
 
-## 最推薦：LIFF 表單（給不會打字的員工）
+> 用詞：UI 一律用「總倉／小瀾」，不要「員工／主管」。但 Sheet 分頁名稱仍是 `員工問題回報`、欄位標題仍含「員工」（資料結構，別改否則寫錯分頁）。
 
-群組 `#回報` 卡片上有一顆 **「📋 開回報表單」**，點了會開一個手機表單頁（`staff.html`），員工只要：
+## 最推薦：總倉回報 LIFF 表單（`staff.html`）
 
-1. 點問題類型（少貨／破損／錯貨／多貨／未到貨／其他）
-2. 用 ＋／− 調數量（未到貨不用調）
-3. 按「📷 掃運單條碼」直接掃，或手動打運單號（可多筆）
-4. 拍／選問題照片（最多 4 張，會自動壓縮）
-5. 按「送出」
+群組 `#回報` 卡片有 **「📋 開回報表單」**，點了開手機表單。第一頁先問 **「貨到了嗎？」**：
 
-送出後走 `POST /api/staff-report`，後端用跟聊天回報同一套邏輯（找訂單、寫 `員工問題回報` 分頁、上傳 Drive），**每個運單號各寫一列**。
+- **🚫 未到貨**：只出現一個框填運單號（可多筆）→ 送出。
+- **✅ 有到貨**：
+  - 步驟2 運單號：`📷 掃運單條碼`（`liff.scanCodeV2`）／`🖼 拍運單照片`（後端 Vision OCR 讀號）／手打（可多筆）
+  - 步驟3 問題商品照片（可多張，壓到 1024px/JPEG 0.6）
+  - 自由描述框（例「粉色少3、白色少2」）→ 後端丟 Haiku 自動判類型
+
+送出走 `POST /api/staff-report`，**每個運單號各寫一列**;運單照片、問題照片分欄，描述原話寫進「員工文字」欄。
 
 ### 安裝設定（一次性）
 
-1. 在 LINE Developers 的 **LINE Login channel** 新增一個 LIFF app：
-   - Endpoint URL：`https://xlan-secretary-rqhb.vercel.app/staff.html`
-   - Size：`Full`
-   - 開啟 **Scan QR**（掃碼權限）
-2. 把拿到的 **LIFF ID** 設成 Vercel 環境變數 `STAFF_LIFF_ID`。
-   - 設了之後，群組 `#回報` 卡片才會出現「開回報表單」按鈕。
-3. （選填）把該 LINE Login channel 的 **Channel ID** 設成 `STAFF_LIFF_CHANNEL_ID`，後端就會驗證員工身分（idToken），更防冒名。沒設也能用，員工名稱用前端 profile。
-4. 部署後測試：在群組打 `#回報` → 點「開回報表單」→ 填一筆 → 看 Google Sheet 有沒有進。
+1. LINE Login channel 新增 LIFF app：Endpoint `https://xlan-secretary-rqhb.vercel.app/staff.html`、Size `Full`、開 **Scan QR**。把 LIFF ID 設給 `STAFF_LIFF_ID`（或 `staff.html` 的 `FALLBACK_LIFF_ID` 後備常數）。
+2. （選填）`STAFF_LIFF_CHANNEL_ID` 設了會驗 idToken。
+3. **Google 授權失效時**（送出回 `invalid_grant`）：開 `https://xlan-secretary-rqhb.vercel.app/api/oauth` 用香奈的 Google 登入授權，新 token 會自動存進 Supabase `xlan_kv.google_refresh_token`，即時生效、不用改 Vercel。
+4. ⚠️ Vercel「Sensitive」環境變數 function 讀不到（見 CLAUDE.md／記憶），所以 Sheet ID／資料夾 ID／LIFF ID 已在 `api/staff-report.js` 寫死後備值。
 
-> 表單頁同網域，不需要 CORS。照片在前端壓到 1024px / JPEG 0.6，控制送出大小。
-
-## 員工怎麼用（聊天版，仍保留）
+## 聊天版 `#回報`（仍保留）
 
 建議在群組裡照這樣做：
 
