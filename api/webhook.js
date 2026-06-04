@@ -19,6 +19,7 @@ const STAFF_REPORT_IMAGE_FOLDER_ID = process.env.STAFF_REPORT_IMAGE_FOLDER_ID;
 const STAFF_REPORT_SHEET_NAME = process.env.STAFF_REPORT_SHEET_NAME || '員工問題回報';
 const STAFF_REPORT_ORDER_SHEET_NAME = process.env.STAFF_REPORT_ORDER_SHEET_NAME || '所有訂單';
 const STAFF_REPORT_GROUP_ID = process.env.STAFF_REPORT_GROUP_ID;
+const STAFF_LIFF_ID = process.env.STAFF_LIFF_ID; // 員工回報 LIFF 表單的 LIFF ID（選填，有設卡片就會出現「開表單」按鈕）
 
 const CARD_THEME = {
   page: '#FFFBEB',
@@ -2015,7 +2016,7 @@ function shouldKeepStaffReportSession(text, session) {
   if (isStaffReportTrigger(text)) return true;
   if (parseStaffProblemText(text)) return true;
   if (extractTrackingNoFromText(text)) return true;
-  return Boolean(session.problem || session.manualTrackingNo);
+  return Boolean(session.problem || staffTrackingList(session).length);
 }
 
 function staffReportSessionActive(session) {
@@ -2045,18 +2046,26 @@ function pruneStaffReportImages(images) {
     .slice(-4);
 }
 
+// 未到貨用比較明確的詞，避免一般聊天「他沒來」誤判；qty 可省略（整筆沒到預設 1）
+// 「位到貨」是員工常見的「未到貨」錯字，特別收進來
+const STAFF_NOT_ARRIVED_RE = /(未到貨|未到货|沒到貨|没到货|沒有到貨|沒有收到貨|貨沒到|貨還沒到|整箱沒到|整批沒到|整箱都沒|整批都沒|全部沒到|都沒到貨|位到貨)/;
+
 function parseStaffProblemText(text) {
   const s = String(text || '')
     .replace(/#\s*回報|回報/g, '')
     .replace(/\s+/g, '')
     .replace(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xFEE0));
+  const found = [];
+  if (STAFF_NOT_ARRIVED_RE.test(s)) {
+    const m = s.match(/(?:未到貨|沒到貨|貨沒到|位到貨)(\d+)/);
+    found.push({ type: '未到貨', qty: m ? Number(m[1]) : 1 });
+  }
   const patterns = [
     { type: '少貨', re: /(少貨|少來|短少|少)(\d+)/ },
     { type: '破損', re: /(破損|破掉|破)(\d+)/ },
     { type: '錯貨', re: /(錯貨|錯)(\d+)/ },
     { type: '多貨', re: /(多貨|多)(\d+)/ },
   ];
-  const found = [];
   for (const p of patterns) {
     const matches = [...s.matchAll(new RegExp(p.re.source, 'g'))];
     const qty = matches.reduce((sum, m) => sum + (Number(m[2]) || 1), 0);
@@ -2077,6 +2086,77 @@ function looksLikeStaffReportText(text) {
   return Boolean(parseStaffProblemText(text)) || isStaffReportTrigger(text);
 }
 
+// AI 補刀：regex 看不懂員工口語/錯字時，丟 Haiku 判斷問題類型。
+// 只在「已確認的回報流程中」呼叫（見 handleStaffReportEvent），避免亂花 token 或誤判一般聊天。
+async function classifyStaffProblemWithAI(text) {
+  const clean = String(text || '').replace(/#\s*回報|回報/g, '').trim();
+  if (!clean) return null;
+  // 把運單號去掉後若沒剩下描述，代表只貼了單號、還沒講問題 → 不亂猜
+  const textForAI = clean.replace(/[A-Z]{0,5}\d{7,}/gi, '').replace(/[\s,，、;；]+/g, '').trim();
+  if (textForAI.length < 2) return null;
+  try {
+    const prompt = `你是倉庫到貨問題回報助手。員工會用很口語、有錯字的方式描述問題。
+請判斷員工這句話是在回報哪一種到貨問題，只回 JSON：
+{"type":"少貨|破損|錯貨|多貨|未到貨|其他","qty":數字或null,"summary":"10字內摘要"}
+判斷規則：
+- 沒到、沒收到、沒來、整箱沒、都沒到、沒有到、未到、位到 = 未到貨
+- 少、短少、缺、不夠 = 少貨
+- 破、壞、損、爛、裂 = 破損
+- 錯、發錯、拿錯、不是我要的 = 錯貨
+- 多、多出、多給 = 多貨
+- 看不出明確類型就填「其他」，把原話濃縮放 summary
+- qty 是有問題的件數，看不出來填 null
+員工的話：${clean}`;
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 150,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const raw = (response.content[0]?.text || '').trim();
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    const parsed = JSON.parse(m[0]);
+    const validTypes = ['少貨', '破損', '錯貨', '多貨', '未到貨', '其他'];
+    if (!validTypes.includes(parsed.type)) return null;
+    return {
+      type: parsed.type,
+      qty: Number(parsed.qty) > 0 ? Number(parsed.qty) : 1,
+      raw: text,
+      ai: true,
+      summary: parsed.summary || '',
+    };
+  } catch (e) {
+    console.log('classifyStaffProblemWithAI_error', e?.message);
+    return null;
+  }
+}
+
+// 從文字抓出「所有」運單號（員工常一次貼多筆）；去重後回陣列
+function extractAllTrackingNosFromText(text) {
+  const compact = String(text || '').toUpperCase().replace(/[^\dA-Z]/g, ' ');
+  const re = /\b([A-Z]{1,5}\d{7,20}|\d{9,20})\b/g;
+  const seen = new Set();
+  const out = [];
+  let m;
+  while ((m = re.exec(compact)) !== null) {
+    const value = m[1];
+    if (/^20\d{6,}$/.test(value)) continue; // 像日期，略過
+    const key = cleanStaffKey(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+// 取出本次 session 已掌握的運單號清單（相容舊的單筆欄位）
+function staffTrackingList(session) {
+  if (!session) return [];
+  if (Array.isArray(session.manualTrackingNos) && session.manualTrackingNos.length) return session.manualTrackingNos;
+  if (session.manualTrackingNo) return [session.manualTrackingNo];
+  return [];
+}
+
 function extractTrackingNoFromText(text) {
   return extractTrackingNoFromOcr(text);
 }
@@ -2085,10 +2165,53 @@ function isStaffReportTrigger(text) {
   return /[#＃]\s*回報/.test(String(text || '').trim());
 }
 
-function buildStaffReportGuideFlex() {
+function buildStaffReportLiffUrl(source) {
+  if (!STAFF_LIFF_ID) return '';
+  const groupId = (source && (source.groupId || source.roomId)) || '';
+  const params = new URLSearchParams({ liff: STAFF_LIFF_ID });
+  if (groupId) params.set('g', groupId);
+  return `https://liff.line.me/${STAFF_LIFF_ID}?${params.toString()}`;
+}
+
+function buildStaffReportGuideFlex(source) {
+  const liffUrl = buildStaffReportLiffUrl(source);
+  const steps = liffUrl
+    ? [
+        { type: 'text', text: '1. 點下面「開回報表單」', size: 'sm', color: CARD_THEME.text, wrap: true },
+        { type: 'text', text: '2. 選問題、調數量、掃運單條碼、拍照', size: 'sm', color: CARD_THEME.text, wrap: true },
+        { type: 'text', text: '3. 按送出就好，小瀾會自動寫進表單', size: 'sm', color: CARD_THEME.text, wrap: true },
+      ]
+    : [
+        { type: 'text', text: '1. 打 #回報 + 問題：少3 / 破2 / 錯1 / 未到貨', size: 'sm', color: CARD_THEME.text, wrap: true },
+        { type: 'text', text: '2. 不會打也沒關係，直接用自己的話講（例：整箱都沒到）', size: 'sm', color: CARD_THEME.text, wrap: true },
+        { type: 'text', text: '3. 拍運單照片＋問題照片；沒到貨的直接打運單號就好', size: 'sm', color: CARD_THEME.text, wrap: true },
+      ];
+  const footerButtons = [];
+  if (liffUrl) {
+    footerButtons.push({ type: 'button', style: 'primary', color: CARD_THEME.primary, height: 'sm', action: { type: 'uri', label: '📋 開回報表單', uri: liffUrl } });
+  }
+  footerButtons.push({ type: 'button', style: 'secondary', height: 'sm', action: { type: 'message', label: '未到貨', text: '#回報 未到貨' } });
+  footerButtons.push({ type: 'button', height: 'sm', color: CARD_THEME.danger, action: { type: 'message', label: '取消', text: '取消回報' } });
+
+  const bodyContents = [
+    { type: 'text', text: '員工回報', weight: 'bold', size: 'lg', color: CARD_THEME.primaryDark },
+    { type: 'text', text: liffUrl ? '選一選、掃一掃就好，小瀾會寫進表單。' : '照順序補資料，小瀾會寫進 Google Sheet。', size: 'sm', color: CARD_THEME.muted, wrap: true },
+    {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: CARD_THEME.soft,
+      paddingAll: '12px',
+      spacing: 'xs',
+      contents: steps,
+    },
+  ];
+  if (liffUrl) {
+    bodyContents.push({ type: 'text', text: '懶得開表單？直接打「#回報 少6」這種也可以。', size: 'xs', color: CARD_THEME.muted, wrap: true });
+  }
+
   return {
     type: 'flex',
-    altText: '員工回報流程',
+    altText: '員工回報',
     contents: {
       type: 'bubble',
       size: 'kilo',
@@ -2097,32 +2220,13 @@ function buildStaffReportGuideFlex() {
         layout: 'vertical',
         backgroundColor: CARD_THEME.page,
         spacing: 'md',
-        contents: [
-          { type: 'text', text: '員工回報', weight: 'bold', size: 'lg', color: CARD_THEME.primaryDark },
-          { type: 'text', text: '照順序補資料，小瀾會寫進 Google Sheet。', size: 'sm', color: CARD_THEME.muted, wrap: true },
-          {
-            type: 'box',
-            layout: 'vertical',
-            backgroundColor: CARD_THEME.soft,
-            paddingAll: '12px',
-            spacing: 'xs',
-            contents: [
-              { type: 'text', text: '1. 輸入 #回報 少3 / 破2 / 錯1', size: 'sm', color: CARD_THEME.text, wrap: true },
-              { type: 'text', text: '2. 上傳運單照片，標籤要清楚', size: 'sm', color: CARD_THEME.text, wrap: true },
-              { type: 'text', text: '3. 上傳問題照片，破損或少貨要看得到', size: 'sm', color: CARD_THEME.text, wrap: true },
-            ],
-          },
-        ],
+        contents: bodyContents,
       },
       footer: {
         type: 'box',
         layout: 'vertical',
         spacing: 'sm',
-        contents: [
-          { type: 'button', style: 'primary', color: CARD_THEME.primary, height: 'sm', action: { type: 'message', label: '少3', text: '#回報 少3' } },
-          { type: 'button', style: 'secondary', height: 'sm', action: { type: 'message', label: '破2', text: '#回報 破2' } },
-          { type: 'button', height: 'sm', color: CARD_THEME.danger, action: { type: 'message', label: '取消', text: '取消回報' } },
-        ],
+        contents: footerButtons,
       },
     },
   };
@@ -2355,10 +2459,18 @@ async function maybeProcessStaffReport(event, session, sourceKey) {
   const images = session.images || [];
   if (!problem) return false;
 
-  if (images.length < 1) {
+  const isNotArrived = /未到貨/.test(problem.type || '');
+  const manualTrackingNos = staffTrackingList(session);
+  // 未到貨通常沒東西可拍：只要已經有運單號，就不強制拍照（這是員工最常卡住的地方）
+  const photoOptional = isNotArrived && manualTrackingNos.length > 0;
+
+  if (images.length < 1 && !photoOptional) {
+    const ask = manualTrackingNos.length > 0
+      ? '收到，請附問題照片（破損或少貨要看得到）。'
+      : '收到。請附運單照片，或直接把運單號打給我。';
     await replyMessage(event.replyToken, [
-      { type: 'text', text: '收到，請附運單照片。運單標籤和問題證據要拍清楚。' },
-      buildStaffReportGuideFlex(),
+      { type: 'text', text: ask },
+      buildStaffReportGuideFlex(event.source),
     ]);
     return true;
   }
@@ -2372,17 +2484,19 @@ async function maybeProcessStaffReport(event, session, sourceKey) {
     downloaded.push({ ...img, buffer, base64, url });
   }
 
-  let trackingNo = session.manualTrackingNo || '';
-  if (!trackingNo) {
+  // 運單號來源：員工打的（可多筆）優先；沒有才用照片 OCR（照片通常一張一單，取最佳一筆）
+  let trackingNos = manualTrackingNos.slice();
+  if (!trackingNos.length && downloaded.length) {
     const ocrTexts = [];
     for (const img of downloaded) {
       ocrTexts.push(await ocrStaffImage(img.base64));
     }
-    trackingNo = extractTrackingNoFromOcr(ocrTexts.join('\n'));
+    const best = extractTrackingNoFromOcr(ocrTexts.join('\n'));
+    if (best) trackingNos = [best];
   }
   const displayName = await getLineDisplayName(event.source);
 
-  if (!trackingNo) {
+  if (!trackingNos.length) {
     await saveStaffReportSession(sourceKey, {
       ...session,
       problem,
@@ -2393,34 +2507,43 @@ async function maybeProcessStaffReport(event, session, sourceKey) {
     return true;
   }
 
-  const order = await findOrderByTrackingNo(trackingNo);
-  await appendStaffReport([
-    new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }),
-    displayName,
-    sourceKey,
-    trackingNo,
-    order.orderNo || '',
-    order.productId || '',
-    order.productName || '',
-    order.qty || '',
-    order.usage || '',
-    problem.type,
-    problem.qty,
-    problem.raw || '',
-    downloaded[0]?.url || '',
-    downloaded.slice(1).map((i) => i.url).filter(Boolean).join('\n'),
-    order.found ? (order.suspected ? '疑似運單' : '未處理') : '找不到運單',
-    order.found
-      ? (order.suspected ? `OCR辨識為 ${trackingNo}，系統疑似比對到 ${order.trackingNo}` : '')
-      : '所有訂單找不到這個運單號',
-    order.rowNumber || '',
-    order.offerId || '',
-  ]);
+  const noteRaw = problem.summary ? `${problem.raw || ''}（小瀾理解：${problem.summary}）` : (problem.raw || '');
+  const lines = [];
+  for (const tn of trackingNos) {
+    const order = await findOrderByTrackingNo(tn);
+    await appendStaffReport([
+      new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }),
+      displayName,
+      sourceKey,
+      tn,
+      order.orderNo || '',
+      order.productId || '',
+      order.productName || '',
+      order.qty || '',
+      order.usage || '',
+      problem.type,
+      problem.qty,
+      noteRaw,
+      downloaded[0]?.url || '',
+      downloaded.slice(1).map((i) => i.url).filter(Boolean).join('\n'),
+      order.found ? (order.suspected ? '疑似運單' : '未處理') : '找不到運單',
+      order.found
+        ? (order.suspected ? `OCR辨識為 ${tn}，系統疑似比對到 ${order.trackingNo}` : '')
+        : '所有訂單找不到這個運單號',
+      order.rowNumber || '',
+      order.offerId || '',
+    ]);
+    if (order.found) {
+      lines.push(`• ${order.trackingNo || tn}　${order.productName || '(未帶出商品)'}${order.suspected ? '（疑似比對）' : ''}`);
+    } else {
+      lines.push(`• ${tn}　找不到運單，小瀾稍後確認`);
+    }
+  }
 
-  const reply = order.found
-    ? `已建立回報\n運單號：${order.trackingNo || trackingNo}${order.suspected ? `\nOCR讀到：${trackingNo}` : ''}\n商品：${order.productName || '(未帶出)'}\n問題：${problem.type} ${problem.qty}`
-    : `已建立回報，但找不到運單號\n運單號：${trackingNo}\n小瀾稍後確認。`;
-  await replyMessage(event.replyToken, reply);
+  const header = trackingNos.length > 1
+    ? `已建立回報 ${trackingNos.length} 筆（${problem.type} ${problem.qty}）`
+    : `已建立回報（${problem.type} ${problem.qty}）`;
+  await replyMessage(event.replyToken, `${header}\n${lines.join('\n')}`);
   await clearStaffReportSession(sourceKey);
   return true;
 }
@@ -2461,7 +2584,8 @@ async function handleStaffReportEvent(event) {
       session.active = true;
       session.activated_at = new Date().toISOString();
     }
-    const possibleManualTrackingNo = extractTrackingNoFromText(text);
+    const possibleManualTrackingNos = extractAllTrackingNosFromText(text);
+    const possibleManualTrackingNo = possibleManualTrackingNos[0] || extractTrackingNoFromText(text);
     const canContinueWaitingReport = Boolean(session.waitingForTrackingNo && possibleManualTrackingNo && (!isGroup || staffReportSessionActive(session)));
     const groupTextWithoutKeyword = isGroup && !isStaffReportTrigger(text) && !canContinueWaitingReport;
     if (groupTextWithoutKeyword) return false;
@@ -2469,30 +2593,47 @@ async function handleStaffReportEvent(event) {
       await clearStaffReportSession(sourceKey);
       return false;
     }
-    if (!looksLikeStaffReportText(text) && session.images.length === 0 && !session.problem && !session.manualTrackingNo) return false;
+    if (!looksLikeStaffReportText(text) && session.images.length === 0 && !session.problem && !staffTrackingList(session).length) return false;
 
     const manualTrackingNo = possibleManualTrackingNo;
-    if (manualTrackingNo) {
-      session.manualTrackingNo = manualTrackingNo;
+    if (possibleManualTrackingNos.length) {
+      // 累積運單號（員工可能一次或分次貼多筆），去重保留多筆
+      const merged = [...staffTrackingList(session), ...possibleManualTrackingNos];
+      const seen = new Set();
+      session.manualTrackingNos = merged.filter((t) => {
+        const k = cleanStaffKey(t);
+        if (!k || seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+      session.manualTrackingNo = session.manualTrackingNos[0];
     }
 
-    const problem = parseStaffProblemText(text) || session.problem;
+    let problem = parseStaffProblemText(text) || session.problem;
+    // AI 補刀：已在回報流程中、regex 看不懂員工口語/錯字時，丟 Haiku 理解
+    if (!problem) {
+      const inReportFlow = isStaffTrigger || session.active === true || staffTrackingList(session).length > 0 || session.images.length > 0;
+      if (inReportFlow) {
+        const aiProblem = await classifyStaffProblemWithAI(text);
+        if (aiProblem) problem = aiProblem;
+      }
+    }
     if (!problem) {
       await saveStaffReportSession(sourceKey, session);
       if (manualTrackingNo) {
         await replyMessage(event.replyToken, [
           { type: 'text', text: '收到運單號，請再輸入問題和數量，例如：少3、破2、錯1。' },
-          buildStaffReportGuideFlex(),
+          buildStaffReportGuideFlex(event.source),
         ]);
       } else if (isStaffTrigger && session.images.length > 0) {
         await replyMessage(event.replyToken, [
           { type: 'text', text: '收到照片，請再輸入問題和數量，例如：少3、破2、錯1。' },
-          buildStaffReportGuideFlex(),
+          buildStaffReportGuideFlex(event.source),
         ]);
       } else {
         await replyMessage(event.replyToken, [
           { type: 'text', text: '請輸入問題和數量，並附運單照片。例如：#回報 少3。' },
-          buildStaffReportGuideFlex(),
+          buildStaffReportGuideFlex(event.source),
         ]);
       }
       return true;
@@ -2512,7 +2653,7 @@ async function handleStaffReportEvent(event) {
       return false;
     }
 
-    if (!session.problem && !session.manualTrackingNo) {
+    if (!session.problem && !staffTrackingList(session).length) {
       if (isGroup) {
         session.images.push({ messageId: event.message.id, createdAt: new Date().toISOString(), recentOnly: true });
         session.images = pruneStaffReportImages(session.images);
@@ -2528,7 +2669,7 @@ async function handleStaffReportEvent(event) {
     if (!session.problem) {
       await replyMessage(event.replyToken, [
         { type: 'text', text: '收到照片，請再輸入問題和數量，例如：少3、破2、錯1。' },
-        buildStaffReportGuideFlex(),
+        buildStaffReportGuideFlex(event.source),
       ]);
       return true;
     }

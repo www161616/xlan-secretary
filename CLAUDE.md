@@ -31,17 +31,23 @@
 - `GOOGLE_CLIENT_SECRET`
 - `GOOGLE_REDIRECT_URI`
 - `GOOGLE_REFRESH_TOKEN`
+- `GOOGLE_VISION_API_KEY` — 員工回報運單 OCR
+- `STAFF_REPORT_SPREADSHEET_ID` / `STAFF_REPORT_IMAGE_FOLDER_ID` / `STAFF_REPORT_SHEET_NAME` / `STAFF_REPORT_ORDER_SHEET_NAME` / `STAFF_REPORT_GROUP_ID`
+- `STAFF_LIFF_ID` — 員工回報 LIFF 表單的 LIFF ID（選填）
+- `STAFF_LIFF_CHANNEL_ID` — LIFF 所屬 LINE Login channel ID（選填，驗身分用）
 
 ## 檔案結構
 
 ```
 xlan-secretary/
 ├── api/
-│   ├── webhook.js       # LINE Webhook 主邏輯
-│   └── reminder.js      # 每日定期付款提醒 Cron Job
-├── index.html           # 網頁儀表板（LIFF 手機版）
-├── setup-db.sql         # Supabase 建表語法
-├── get-token.js         # Google OAuth Token 取得工具（一次性）
+│   ├── webhook.js        # LINE Webhook 主邏輯
+│   ├── reminder.js       # 每日定期付款提醒 Cron Job
+│   └── staff-report.js   # 員工回報 LIFF 表單後端（POST /api/staff-report）
+├── index.html            # 網頁儀表板（LIFF 手機版）
+├── staff.html            # 員工回報手機表單（LIFF，掃碼+拍照+送出）
+├── setup-db.sql          # Supabase 建表語法
+├── get-token.js          # Google OAuth Token 取得工具（一次性）
 ├── package.json
 ├── vercel.json
 └── .gitignore
@@ -97,6 +103,8 @@ xlan-secretary/
 25. **月底財務總結** — 每月最後一天 21 點自動推送（公司帳/私人帳/完成待辦/修復 Bug）
 26. **常用連結記憶** — 丟連結（含標籤如「匯洲 https://…」）自動分類存成 `網址` 標籤筆記；問「給我匯洲的網址」「匯洲連結」會撈出**所有**匹配連結（去重後列出）；「我的連結／所有網址」列出全部常用連結。查詢時自動濾除「給我／幫我／我要」等贅詞，並做忽略空白的關鍵字比對
 27. **部署清單** — `save_deployment` / `get_deployment` tools，記每台機器人/系統的部署位置與方式（平台、程式碼位置、部署/修改方式、網址、備註），存成 `部署` 標籤筆記。說「記部署 小瀾 …」會記下（同名自動更新覆蓋）；問「小瀾部署在哪」「匯洲怎麼改」回該台完整資訊；「我的部署／所有機器人」列出全部
+28. **員工運單回報（群組 `#回報`）** — 運單照片 OCR + 問題回報寫入 Google Sheet `員工問題回報`。問題類型支援少貨/破損/錯貨/多貨/**未到貨**（`未到貨`/`沒到貨`/`整箱沒到`/`位到貨` 等，數量可省略）。員工口語亂打（如「他沒有到 不是少不是破」）regex 接不住時，**在回報流程中**用 Haiku AI 判斷類型，真看不出記「其他」並照寫原話。支援**一次貼多個運單號各建一列**（共用同一問題）；**未到貨只要有運單號就免拍照**。詳見 `STAFF_REPORT_AGENT.md`
+29. **員工回報 LIFF 表單** — 群組 `#回報` 卡片有「📋 開回報表單」按鈕，開 `staff.html` 手機表單：點問題類型、＋／− 調數量、**掃運單條碼**（`liff.scanCodeV2`）或手打（可多筆）、拍/選問題照片（壓縮後最多 4 張）、送出。走 `POST /api/staff-report`，後端重用同一套寫入邏輯、每個運單號各一列。需設 `STAFF_LIFF_ID`（選填 `STAFF_LIFF_CHANNEL_ID` 驗身分）。設定見 `STAFF_REPORT_AGENT.md`
 
 ### 每小時提醒系統（api/reminder.js）
 
