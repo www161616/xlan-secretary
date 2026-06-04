@@ -563,7 +563,7 @@ function classifyTextIntent(text, context = {}) {
   if (/^(工作報告|今天報告|今日報告|本週報告|這週報告|週報)$/.test(raw)) return { intent: 'work_report', confidence: 1, route: 'fast', reason: 'work_report_command' };
   if (parseNaturalTodoAction(raw)) return { intent: 'todo_update', confidence: 0.95, route: 'fast', reason: 'natural_todo_action' };
   if (parseSimpleExpenseText(raw)) return { intent: 'expense_save', confidence: 0.9, route: 'fast', reason: 'simple_expense' };
-  if (/^(本月記帳摘要|本月帳務|本月收支|這個月帳務|這個月花多少|今天記帳摘要|今天帳務|今天收支|今天花多少|今天花了多少|今日帳務|本週記帳摘要|本週帳務|本週收支|這週帳務|這週花多少)$/.test(raw)) {
+  if (/^(本月記帳摘要|本月帳務|本月記帳|本月帳目|本月收支|本月開銷|本月花費|本月支出|這個月帳務|這個月記帳|這個月花多少|今天記帳摘要|今天帳務|今天記帳|今天帳目|今天收支|今天開銷|今天花費|今天花多少|今天花了多少|今日帳務|今日記帳|本週記帳摘要|本週帳務|本週記帳|本週帳目|本週收支|本週開銷|本週花費|這週帳務|這週記帳|這週花多少)$/.test(raw)) {
     return { intent: 'expense_query', confidence: 1, route: 'fast', reason: 'expense_query_command' };
   }
   if (/(改成|改為|更新成|更新為|換成|換為).*(https?:\/\/)|https?:\/\/.*(改成|改為|更新成|更新為|換成|換為)/i.test(raw)) {
@@ -1375,13 +1375,19 @@ function userAskedBotSetup(text) {
 function stripUnaskedGroupSetupAdvice(replyText, userText) {
   if (userAskedBotSetup(userText)) return replyText;
   const paragraphs = String(replyText || '').split(/\n{2,}/);
-  const kept = paragraphs.filter((paragraph) => !(
+  const isSetupAdvice = (paragraph) => (
     /(加進|加入|邀請).*(LINE\s*)?群組/i.test(paragraph)
     || /(LINE\s*)?群組.*(開頭|記錄|使用|設定)/i.test(paragraph)
+    || /建立好我|已經建立好/i.test(paragraph)
+    || /[#＃]\s*開頭/i.test(paragraph)
     || /webhook|Webhook/i.test(paragraph)
     || /直接把我加/i.test(paragraph)
-  ));
-  return kept.join('\n\n').trim() || String(replyText || '').trim();
+  );
+  const kept = paragraphs.filter((paragraph) => !isSetupAdvice(paragraph));
+  const cleaned = kept.join('\n\n').trim();
+  if (cleaned) return cleaned;
+  // 整則都是「沒問就不該講」的群組設定廢話 → 不要回吐原文，給中性簡短回覆
+  return '好，我在。你可以直接跟我說要記什麼，或查待辦、帳務。';
 }
 
 function normalizeClaudeReply(replyText, userText) {
@@ -4576,13 +4582,13 @@ async function handleDirectFastCommand(text, focusKey = '') {
   if (simpleExpenseReply) {
     return simpleExpenseReply;
   }
-  if (/^(本月記帳摘要|本月帳務|本月收支|這個月帳務|這個月花多少)$/.test(text)) {
+  if (/^(本月記帳摘要|本月帳務|本月記帳|本月帳目|本月收支|本月開銷|本月花費|本月支出|這個月帳務|這個月記帳|這個月花多少)$/.test(text)) {
     return buildExpenseSummaryReplyMessages('this_month', focusKey);
   }
-  if (/^(今天記帳摘要|今天帳務|今天收支|今天花多少|今天花了多少|今日帳務)$/.test(text)) {
+  if (/^(今天記帳摘要|今天帳務|今天記帳|今天帳目|今天收支|今天開銷|今天花費|今天花多少|今天花了多少|今日帳務|今日記帳)$/.test(text)) {
     return buildExpenseSummaryReplyMessages('today', focusKey);
   }
-  if (/^(本週記帳摘要|本週帳務|本週收支|這週帳務|這週花多少)$/.test(text)) {
+  if (/^(本週記帳摘要|本週帳務|本週記帳|本週帳目|本週收支|本週開銷|本週花費|這週帳務|這週記帳|這週花多少)$/.test(text)) {
     return buildExpenseSummaryReplyMessages('this_week', focusKey);
   }
   const planningScope = parseTodoPlanningScope(text);
@@ -4803,11 +4809,11 @@ async function handleDirectMessage(event) {
   } else if (/^最近一筆分類(.+)$/.test(text)) {
     const match = text.match(/^最近一筆分類(.+)$/);
     replyMessages = [{ type: 'text', text: await updateLatestExpenseCategory(match[1].trim()) }];
-  } else if (/^(本月記帳摘要|本月帳務|本月收支|這個月帳務|這個月花多少)$/.test(text)) {
+  } else if (/^(本月記帳摘要|本月帳務|本月記帳|本月帳目|本月收支|本月開銷|本月花費|本月支出|這個月帳務|這個月記帳|這個月花多少)$/.test(text)) {
     replyMessages = await buildExpenseSummaryReplyMessages('this_month', focusKey);
-  } else if (/^(今天記帳摘要|今天帳務|今天收支|今天花多少|今天花了多少|今日帳務)$/.test(text)) {
+  } else if (/^(今天記帳摘要|今天帳務|今天記帳|今天帳目|今天收支|今天開銷|今天花費|今天花多少|今天花了多少|今日帳務|今日記帳)$/.test(text)) {
     replyMessages = await buildExpenseSummaryReplyMessages('today', focusKey);
-  } else if (/^(本週記帳摘要|本週帳務|本週收支|這週帳務|這週花多少)$/.test(text)) {
+  } else if (/^(本週記帳摘要|本週帳務|本週記帳|本週帳目|本週收支|本週開銷|本週花費|這週帳務|這週記帳|這週花多少)$/.test(text)) {
     replyMessages = await buildExpenseSummaryReplyMessages('this_week', focusKey);
   } else if (isBriefingCommand(text)) {
     replyMessages = await buildSecretaryBriefingMessages(focusKey);
