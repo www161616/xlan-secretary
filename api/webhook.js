@@ -212,6 +212,69 @@ async function deleteDuplicateExpenses(sourceKey) {
   return `已清掉 ${count} 筆重複的${focus.category ? `「${focus.category} NT$${focus.amount}」` : '記帳'}。`;
 }
 
+// --- 批次清空某期間的記帳（兩段式確認，避免誤刪）---
+const EXPENSE_BULK_FOCUS_TTL_MS = 5 * 60 * 1000;
+const EXPENSE_PERIOD_LABELS = { today: '今天', this_week: '本週', this_month: '本月' };
+
+function expenseBulkFocusKey(sourceKey) {
+  return `expense_bulk_focus:${sourceKey}`;
+}
+
+async function saveBulkExpenseFocus(sourceKey, ids, label) {
+  if (!sourceKey || !Array.isArray(ids) || ids.length === 0) return;
+  await supabase.from('xlan_kv').upsert({
+    key: expenseBulkFocusKey(sourceKey),
+    value: JSON.stringify({ ids, label: label || '', updated_at: new Date().toISOString() }),
+  });
+}
+
+async function clearBulkExpenseFocus(sourceKey) {
+  if (!sourceKey) return;
+  await supabase.from('xlan_kv').delete().eq('key', expenseBulkFocusKey(sourceKey));
+}
+
+async function loadBulkExpenseFocus(sourceKey) {
+  if (!sourceKey) return null;
+  const { data } = await supabase.from('xlan_kv').select('value').eq('key', expenseBulkFocusKey(sourceKey)).single();
+  if (!data?.value) return null;
+  let focus;
+  try {
+    focus = JSON.parse(data.value);
+  } catch {
+    return null;
+  }
+  const updatedAt = new Date(focus.updated_at || 0).getTime();
+  if (!Array.isArray(focus.ids) || focus.ids.length === 0 || !Number.isFinite(updatedAt) || Date.now() - updatedAt > EXPENSE_BULK_FOCUS_TTL_MS) {
+    return null;
+  }
+  return focus;
+}
+
+// 第一段：告知數量與合計，存待刪清單，等使用者回「確定清空」
+async function requestClearExpenses(sourceKey, period = 'today') {
+  const label = EXPENSE_PERIOD_LABELS[period] || '今天';
+  const expenses = await getExpenses(period);
+  if (expenses.length === 0) {
+    await clearBulkExpenseFocus(sourceKey);
+    return `${label}沒有記帳，不用清。`;
+  }
+  const total = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+  await saveBulkExpenseFocus(sourceKey, expenses.map((e) => e.id), label);
+  return `${label}有 ${expenses.length} 筆記帳（合計 NT$${total}）。確定要全部清掉嗎？\n回「確定清空」就刪，回別的就當取消。`;
+}
+
+// 第二段：真正刪除
+async function confirmClearExpenses(sourceKey) {
+  const focus = await loadBulkExpenseFocus(sourceKey);
+  if (!focus) return '沒有待清空的記帳（可能超過 5 分鐘了）。要清的話先說「清空今天記帳」。';
+  const { data, error } = await supabase.from('xlan_expenses').delete().in('id', focus.ids).select();
+  await clearBulkExpenseFocus(sourceKey);
+  if (error) throw new Error(error.message);
+  const count = Array.isArray(data) ? data.length : 0;
+  if (count === 0) return '那些記帳已經不在了，不用再清。';
+  return `已清空${focus.label || ''} ${count} 筆記帳。`;
+}
+
 async function getExpenses(period) {
   const now = new Date();
   let startDate;
@@ -4562,6 +4625,13 @@ async function handleDirectFastCommand(text, focusKey = '') {
   }
   if (/^(刪掉重複|刪除重複|清掉重複|清除重複|重複的也刪|重複也刪|重複一起刪|一起刪掉重複)$/.test(text)) {
     return [{ type: 'text', text: await deleteDuplicateExpenses(focusKey) }];
+  }
+  if (/^(清空|清除|清掉|刪光|刪掉全部)(今天|今日|本週|這週|本月|這個月)?(的)?(記帳|帳務|帳目)$/.test(text)) {
+    const period = /本週|這週/.test(text) ? 'this_week' : /本月|這個月/.test(text) ? 'this_month' : 'today';
+    return [{ type: 'text', text: await requestClearExpenses(focusKey, period) }];
+  }
+  if (/^(確定清空|確認清空|確定清掉|確定清除|清空確認|對清空|對，清空)$/.test(text)) {
+    return [{ type: 'text', text: await confirmClearExpenses(focusKey) }];
   }
   if (/^最近一筆算(公司|私人)$/.test(text)) {
     const match = text.match(/^最近一筆算(公司|私人)$/);
