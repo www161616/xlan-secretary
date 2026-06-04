@@ -352,7 +352,21 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
   // 前端開啟表單時先 GET 拿 LIFF ID（避免 liff.state 包住網址參數讀不到）
   if (req.method === 'GET') {
-    res.status(200).json({ ok: true, liffId: (STAFF_LIFF_ID || '').trim() });
+    res.status(200).json({
+      ok: true,
+      liffId: (STAFF_LIFF_ID || '').trim(),
+      // 診斷用：只回報變數有沒有設（true/false），不洩漏值
+      env: {
+        spreadsheet: !!process.env.STAFF_REPORT_SPREADSHEET_ID,
+        vision: !!process.env.GOOGLE_VISION_API_KEY,
+        folder: !!process.env.STAFF_REPORT_IMAGE_FOLDER_ID,
+        sheetName: !!process.env.STAFF_REPORT_SHEET_NAME,
+        refresh: !!process.env.GOOGLE_REFRESH_TOKEN,
+        clientId: !!process.env.GOOGLE_CLIENT_ID,
+        anthropic: !!process.env.ANTHROPIC_API_KEY,
+        liff: !!process.env.STAFF_LIFF_ID,
+      },
+    });
     return;
   }
   if (req.method !== 'POST') {
