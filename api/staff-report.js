@@ -363,6 +363,8 @@ module.exports = async (req, res) => {
         sheetName: !!process.env.STAFF_REPORT_SHEET_NAME,
         refresh: !!process.env.GOOGLE_REFRESH_TOKEN,
         clientId: !!process.env.GOOGLE_CLIENT_ID,
+        clientSecret: !!process.env.GOOGLE_CLIENT_SECRET,
+        orderSheet: !!process.env.STAFF_REPORT_ORDER_SHEET_NAME,
         anthropic: !!process.env.ANTHROPIC_API_KEY,
         liff: !!process.env.STAFF_LIFF_ID,
       },
