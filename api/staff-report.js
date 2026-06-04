@@ -454,6 +454,11 @@ module.exports = async (req, res) => {
     res.status(200).json({ ok: true, ...result });
   } catch (e) {
     console.error('staff_report_submit_error', e);
-    res.status(500).json({ ok: false, error: e?.message || '寫入失敗' });
+    const detail = e?.response?.data?.error_description
+      || e?.response?.data?.error
+      || e?.errors?.[0]?.message
+      || e?.message
+      || '寫入失敗';
+    res.status(500).json({ ok: false, error: String(detail), code: e?.response?.data?.error || e?.code || '' });
   }
 };
