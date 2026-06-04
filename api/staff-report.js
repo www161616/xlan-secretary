@@ -11,8 +11,10 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
 const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
-const STAFF_REPORT_SPREADSHEET_ID = process.env.STAFF_REPORT_SPREADSHEET_ID;
-const STAFF_REPORT_IMAGE_FOLDER_ID = process.env.STAFF_REPORT_IMAGE_FOLDER_ID;
+// Sheet ID / 資料夾 ID 非機密（真正的鑰匙是 Google OAuth token，存在環境變數）。
+// 環境變數有設就用它；沒設就用這裡的後備值，免得卡在 Vercel 的 Sensitive 變數問題。
+const STAFF_REPORT_SPREADSHEET_ID = (process.env.STAFF_REPORT_SPREADSHEET_ID || '1_MWDukWyWTjVF_pVcW9ZBYeZFRKdMnf_dMVxxLMQ33A').trim();
+const STAFF_REPORT_IMAGE_FOLDER_ID = (process.env.STAFF_REPORT_IMAGE_FOLDER_ID || '1u9MQJ2DnF6jKrfazDIJpYAKaEuM4Xr1B').trim();
 const STAFF_REPORT_SHEET_NAME = process.env.STAFF_REPORT_SHEET_NAME || '員工問題回報';
 const STAFF_REPORT_ORDER_SHEET_NAME = process.env.STAFF_REPORT_ORDER_SHEET_NAME || '所有訂單';
 const GOOGLE_VISION_API_KEY = process.env.GOOGLE_VISION_API_KEY;
