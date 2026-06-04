@@ -2196,7 +2196,7 @@ function buildStaffReportGuideFlex(source) {
   footerButtons.push({ type: 'button', height: 'sm', color: CARD_THEME.danger, action: { type: 'message', label: '取消', text: '取消回報' } });
 
   const bodyContents = [
-    { type: 'text', text: '員工回報', weight: 'bold', size: 'lg', color: CARD_THEME.primaryDark },
+    { type: 'text', text: '總倉回報', weight: 'bold', size: 'lg', color: CARD_THEME.primaryDark },
     { type: 'text', text: liffUrl ? '選一選、掃一掃就好，小瀾會寫進表單。' : '照順序補資料，小瀾會寫進 Google Sheet。', size: 'sm', color: CARD_THEME.muted, wrap: true },
     {
       type: 'box',
@@ -2213,7 +2213,7 @@ function buildStaffReportGuideFlex(source) {
 
   return {
     type: 'flex',
-    altText: '員工回報',
+    altText: '總倉回報',
     contents: {
       type: 'bubble',
       size: 'kilo',
@@ -2563,7 +2563,7 @@ async function handleStaffReportEvent(event) {
   }
   if (!staffReportEnabled()) {
     if (isStaffTrigger) {
-      await replyMessage(event.replyToken, '員工回報功能還沒啟用：請檢查 GOOGLE_VISION_API_KEY 和 STAFF_REPORT_SPREADSHEET_ID。');
+      await replyMessage(event.replyToken, '總倉回報功能還沒啟用：請檢查 GOOGLE_VISION_API_KEY 和 STAFF_REPORT_SPREADSHEET_ID。');
       return true;
     }
     return false;
@@ -5088,22 +5088,6 @@ async function handleDirectMessage(event) {
 // --- Vercel Serverless Handler ---
 module.exports = async (req, res) => {
   if (req.method === 'GET') {
-    if (req.url && req.url.includes('diag')) {
-      // 唯讀診斷：只回報變數有沒有設（true/false），不洩漏值
-      return res.status(200).json({
-        ok: true,
-        where: 'webhook',
-        env: {
-          spreadsheet: !!process.env.STAFF_REPORT_SPREADSHEET_ID,
-          vision: !!process.env.GOOGLE_VISION_API_KEY,
-          folder: !!process.env.STAFF_REPORT_IMAGE_FOLDER_ID,
-          sheetName: !!process.env.STAFF_REPORT_SHEET_NAME,
-          liff: !!process.env.STAFF_LIFF_ID,
-          refresh: !!process.env.GOOGLE_REFRESH_TOKEN,
-          anthropic: !!process.env.ANTHROPIC_API_KEY,
-        },
-      });
-    }
     return res.status(200).send('xlan-secretary is running.');
   }
 
@@ -5143,7 +5127,7 @@ module.exports = async (req, res) => {
       });
       if (event.type === 'join' && event.replyToken) {
         try {
-          await replyMessage(event.replyToken, '小瀾已進群。員工回報請輸入 #回報，再附上運單照片和問題數量。');
+          await replyMessage(event.replyToken, '小瀾已進群。總倉回報請輸入 #回報，再附上運單照片和問題數量。');
         } catch (err) {
           console.error('Join reply failed:', err);
         }

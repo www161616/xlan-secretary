@@ -342,7 +342,7 @@ async function createStaffReports({ type, qty, description, summary, trackingNos
         aiNote,
         tn
           ? (order.found ? (order.suspected ? `系統疑似比對到 ${order.trackingNo}` : '') : '所有訂單找不到這個運單號')
-          : '員工未填運單號',
+          : '總倉未填運單號',
       ].filter(Boolean).join('｜'),
       order.rowNumber || '',
       order.offerId || '',
@@ -376,49 +376,7 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
   // 前端開啟表單時先 GET 拿 LIFF ID（避免 liff.state 包住網址參數讀不到）
   if (req.method === 'GET') {
-    let googleAuth = 'untested';
-    let supa = 'untested';
-    if (req.url && req.url.includes('diag')) {
-      if (!supabase) {
-        supa = 'no-config';
-      } else {
-        try {
-          const { error } = await supabase.from('xlan_kv').upsert({ key: 'staff_diag', value: 'ping' });
-          supa = error ? ('fail:' + error.message) : 'ok';
-        } catch (e) {
-          supa = 'fail:' + (e?.message || 'err');
-        }
-      }
-      await resolveRefreshToken();
-      try {
-        const c = getGoogleOAuthClient();
-        const t = await c.getAccessToken();
-        googleAuth = (t && t.token) ? 'ok' : 'no-token';
-      } catch (e) {
-        googleAuth = 'fail:' + (e?.response?.data?.error || e?.message || 'err');
-      }
-    }
-    res.status(200).json({
-      ok: true,
-      liffId: (STAFF_LIFF_ID || '').trim(),
-      googleAuth,
-      tokenSource: REFRESH_TOKEN_SOURCE,
-      supabase: supa,
-      spreadsheetIdTail: STAFF_REPORT_SPREADSHEET_ID.slice(-6),
-      // 診斷用：只回報變數有沒有設（true/false），不洩漏值
-      env: {
-        spreadsheet: !!process.env.STAFF_REPORT_SPREADSHEET_ID,
-        vision: !!process.env.GOOGLE_VISION_API_KEY,
-        folder: !!process.env.STAFF_REPORT_IMAGE_FOLDER_ID,
-        sheetName: !!process.env.STAFF_REPORT_SHEET_NAME,
-        refresh: !!process.env.GOOGLE_REFRESH_TOKEN,
-        clientId: !!process.env.GOOGLE_CLIENT_ID,
-        clientSecret: !!process.env.GOOGLE_CLIENT_SECRET,
-        orderSheet: !!process.env.STAFF_REPORT_ORDER_SHEET_NAME,
-        anthropic: !!process.env.ANTHROPIC_API_KEY,
-        liff: !!process.env.STAFF_LIFF_ID,
-      },
-    });
+    res.status(200).json({ ok: true, liffId: (STAFF_LIFF_ID || '').trim() });
     return;
   }
   if (req.method !== 'POST') {
@@ -426,7 +384,7 @@ module.exports = async (req, res) => {
     return;
   }
   if (!STAFF_REPORT_SPREADSHEET_ID) {
-    res.status(503).json({ ok: false, error: '員工回報尚未啟用（缺 STAFF_REPORT_SPREADSHEET_ID）' });
+    res.status(503).json({ ok: false, error: '總倉回報尚未啟用（缺 STAFF_REPORT_SPREADSHEET_ID）' });
     return;
   }
   try {

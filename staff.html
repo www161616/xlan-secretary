@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>員工回報</title>
+<title>總倉回報</title>
 <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 <style>
   :root{
@@ -86,7 +86,7 @@
 
 <!-- 表單 -->
 <div id="form" class="hidden">
-  <h1>📦 員工回報</h1>
+  <h1>📦 總倉回報</h1>
   <p class="sub">先選一個，剩下小瀾幫你寫進表單。</p>
   <p class="who" id="who"></p>
 
@@ -362,9 +362,9 @@
     var box = el('doneDetail'); box.innerHTML = '';
     (data.results || []).forEach(function(r){
       var li = document.createElement('div'); li.className = 'li';
-      if (!r.trackingNo) li.textContent = '• （未填運單號，主管稍後確認）';
+      if (!r.trackingNo) li.textContent = '• （未填運單號，小瀾稍後確認）';
       else if (r.found) li.textContent = '• ' + r.trackingNo + '　' + (r.productName || '(未帶出商品)') + (r.suspected ? '（疑似比對）' : '');
-      else li.textContent = '• ' + r.trackingNo + '　找不到運單，主管稍後確認';
+      else li.textContent = '• ' + r.trackingNo + '　找不到運單，小瀾稍後確認';
       box.appendChild(li);
     });
     if (!(data.results || []).length) box.innerHTML = '<div class="li">已送出</div>';
