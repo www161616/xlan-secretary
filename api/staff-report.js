@@ -377,7 +377,18 @@ module.exports = async (req, res) => {
   // 前端開啟表單時先 GET 拿 LIFF ID（避免 liff.state 包住網址參數讀不到）
   if (req.method === 'GET') {
     let googleAuth = 'untested';
+    let supa = 'untested';
     if (req.url && req.url.includes('diag')) {
+      if (!supabase) {
+        supa = 'no-config';
+      } else {
+        try {
+          const { error } = await supabase.from('xlan_kv').upsert({ key: 'staff_diag', value: 'ping' });
+          supa = error ? ('fail:' + error.message) : 'ok';
+        } catch (e) {
+          supa = 'fail:' + (e?.message || 'err');
+        }
+      }
       await resolveRefreshToken();
       try {
         const c = getGoogleOAuthClient();
@@ -392,6 +403,7 @@ module.exports = async (req, res) => {
       liffId: (STAFF_LIFF_ID || '').trim(),
       googleAuth,
       tokenSource: REFRESH_TOKEN_SOURCE,
+      supabase: supa,
       spreadsheetIdTail: STAFF_REPORT_SPREADSHEET_ID.slice(-6),
       // 診斷用：只回報變數有沒有設（true/false），不洩漏值
       env: {
