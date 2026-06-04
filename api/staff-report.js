@@ -3,7 +3,10 @@
 // 重用的寫入邏輯（找訂單、寫 Sheet、上傳 Drive）是從 webhook.js 複製過來的，
 // 兩邊邏輯若要改請一起改。
 const { google } = require('googleapis');
+const Anthropic = require('@anthropic-ai/sdk');
 
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const anthropic = ANTHROPIC_API_KEY ? new Anthropic({ apiKey: ANTHROPIC_API_KEY }) : null;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
@@ -12,6 +15,7 @@ const STAFF_REPORT_SPREADSHEET_ID = process.env.STAFF_REPORT_SPREADSHEET_ID;
 const STAFF_REPORT_IMAGE_FOLDER_ID = process.env.STAFF_REPORT_IMAGE_FOLDER_ID;
 const STAFF_REPORT_SHEET_NAME = process.env.STAFF_REPORT_SHEET_NAME || '員工問題回報';
 const STAFF_REPORT_ORDER_SHEET_NAME = process.env.STAFF_REPORT_ORDER_SHEET_NAME || '所有訂單';
+const GOOGLE_VISION_API_KEY = process.env.GOOGLE_VISION_API_KEY;
 const STAFF_LIFF_CHANNEL_ID = process.env.STAFF_LIFF_CHANNEL_ID; // 選填：有設就驗證 LIFF idToken
 const STAFF_LIFF_ID = process.env.STAFF_LIFF_ID; // 給前端 staff.html 初始化用
 
@@ -36,6 +40,39 @@ function cleanStaffKey(value) {
 }
 function splitStaffKeys(value) {
   return String(value || '').split(/[;；,，、\s]+/).map(cleanStaffKey).filter(Boolean);
+}
+function scoreTrackingCandidate(value) {
+  let score = 0;
+  if (/^[A-Z]{1,5}\d+$/.test(value)) score += 4;
+  if (/^\d{10,16}$/.test(value)) score += 3;
+  if (value.length >= 10 && value.length <= 18) score += 2;
+  if (/^1\d{11,}$/.test(value)) score += 1;
+  return score;
+}
+function extractTrackingNoFromOcr(text) {
+  const compact = String(text || '').toUpperCase().replace(/[^\dA-Z]/g, ' ');
+  const candidates = [];
+  const re = /\b([A-Z]{1,5}\d{7,20}|\d{9,20})\b/g;
+  let m;
+  while ((m = re.exec(compact)) !== null) {
+    const value = m[1];
+    if (/^20\d{6,}$/.test(value)) continue;
+    candidates.push(value);
+  }
+  if (!candidates.length) return '';
+  candidates.sort((a, b) => scoreTrackingCandidate(b) - scoreTrackingCandidate(a));
+  return candidates[0];
+}
+async function ocrStaffImage(base64Data) {
+  if (!GOOGLE_VISION_API_KEY) return '';
+  const res = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${encodeURIComponent(GOOGLE_VISION_API_KEY)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requests: [{ image: { content: base64Data }, features: [{ type: 'TEXT_DETECTION' }] }] }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Vision OCR failed: ${JSON.stringify(data)}`);
+  return data.responses?.[0]?.textAnnotations?.[0]?.description || '';
 }
 function staffTrackingDistance(a, b) {
   const left = cleanStaffKey(a);
@@ -194,23 +231,66 @@ function normalizeTrackingNos(input) {
   return out;
 }
 
-// --- 核心：建立回報（每個運單號各一列，共用同一問題與照片）---
-async function createStaffReports({ type, qty, trackingNos, note, employeeName, sourceKey, photoBase64List }) {
-  // 照片只上傳一次，所有運單列共用
-  const photoUrls = [];
-  for (const b64 of (photoBase64List || [])) {
+// --- AI 判斷問題類型（員工自由填寫 → 少貨/破損/錯貨/多貨/未到貨/其他）---
+async function classifyProblem(text) {
+  const clean = String(text || '').trim();
+  if (!clean) return { type: '其他', qty: 1, summary: '' };
+  if (!anthropic) return { type: '其他', qty: 1, summary: clean.slice(0, 20) };
+  try {
+    const prompt = `你是倉庫到貨問題回報助手。員工會用很口語、有錯字的方式描述問題。
+請判斷員工這句話是在回報哪一種到貨問題，只回 JSON：
+{"type":"少貨|破損|錯貨|多貨|未到貨|其他","qty":數字或null,"summary":"10字內摘要"}
+判斷規則：
+- 沒到、沒收到、沒來、整箱沒、都沒到、沒有到、未到、位到 = 未到貨
+- 少、短少、缺、不夠 = 少貨
+- 破、壞、損、爛、裂 = 破損
+- 錯、發錯、拿錯、不是我要的 = 錯貨
+- 多、多出、多給 = 多貨
+- 看不出明確類型就填「其他」，把原話濃縮放 summary
+- qty 是有問題的件數，看不出來填 null
+員工的話：${clean}`;
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 150,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const raw = (response.content[0]?.text || '').trim();
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (!m) return { type: '其他', qty: 1, summary: '' };
+    const parsed = JSON.parse(m[0]);
+    const type = VALID_TYPES.includes(parsed.type) ? parsed.type : '其他';
+    const qty = Number(parsed.qty) > 0 ? Number(parsed.qty) : 1;
+    return { type, qty, summary: parsed.summary || '' };
+  } catch (e) {
+    console.error('classifyProblem_error', e?.message);
+    return { type: '其他', qty: 1, summary: '' };
+  }
+}
+
+async function uploadPhotoList(list, sourceKey, tag) {
+  const urls = [];
+  for (const b64 of (list || [])) {
     const clean = String(b64 || '').replace(/^data:image\/\w+;base64,/, '');
     if (!clean) continue;
     try {
       const buffer = Buffer.from(clean, 'base64');
-      const url = await uploadStaffImageBufferToDrive(buffer, `${Date.now()}_${sanitizeKey(sourceKey)}_${photoUrls.length + 1}.jpg`);
-      if (url) photoUrls.push(url);
+      const url = await uploadStaffImageBufferToDrive(buffer, `${Date.now()}_${sanitizeKey(sourceKey)}_${tag}${urls.length + 1}.jpg`);
+      if (url) urls.push(url);
     } catch (e) {
       console.error('staff_photo_upload_error', e?.message);
     }
   }
-  const problemPhotoCell = photoUrls.join('\n');
-  const noteCell = note ? `（表單）${note}` : '（表單回報）';
+  return urls;
+}
+
+// --- 核心：建立回報（每個運單號各一列，共用同一問題與照片）---
+async function createStaffReports({ type, qty, description, summary, trackingNos, employeeName, sourceKey, waybillPhotoList, problemPhotoList }) {
+  const waybillUrls = await uploadPhotoList(waybillPhotoList, sourceKey, 'wb');
+  const problemUrls = await uploadPhotoList(problemPhotoList, sourceKey, 'pp');
+  const waybillPhotoCell = waybillUrls.join('\n');
+  const problemPhotoCell = problemUrls.join('\n');
+  const empTextCell = description ? description : (type === '未到貨' ? '未到貨' : '（表單回報）'); // 員工原話
+  const aiNote = `小瀾判斷：${type}${qty ? ' ' + qty : ''}${summary ? `（${summary}）` : ''}`;
   const now = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
 
   const tnList = (trackingNos && trackingNos.length) ? trackingNos : [''];
@@ -230,13 +310,16 @@ async function createStaffReports({ type, qty, trackingNos, note, employeeName, 
       order.usage || '',
       type,
       qty,
-      noteCell,
-      '', // 運單照片：表單走掃碼/打字，照片都歸到問題照片
+      empTextCell,
+      waybillPhotoCell,
       problemPhotoCell,
       tn ? (order.found ? (order.suspected ? '疑似運單' : '未處理') : '找不到運單') : '未填運單',
-      tn
-        ? (order.found ? (order.suspected ? `表單運單 ${tn}，系統疑似比對到 ${order.trackingNo}` : '') : '所有訂單找不到這個運單號')
-        : '員工未填運單號',
+      [
+        aiNote,
+        tn
+          ? (order.found ? (order.suspected ? `系統疑似比對到 ${order.trackingNo}` : '') : '所有訂單找不到這個運單號')
+          : '員工未填運單號',
+      ].filter(Boolean).join('｜'),
       order.rowNumber || '',
       order.offerId || '',
     ]);
@@ -248,7 +331,7 @@ async function createStaffReports({ type, qty, trackingNos, note, employeeName, 
     });
   }
   await appendStaffReportRows(rows);
-  return { created: rows.length, results, photoCount: photoUrls.length };
+  return { created: rows.length, results, photoCount: waybillUrls.length + problemUrls.length, problemType: type, problemQty: qty };
 }
 
 // --- 讀取 JSON body（相容 Vercel 已解析 / 原始串流）---
@@ -282,19 +365,51 @@ module.exports = async (req, res) => {
   }
   try {
     const body = await readJsonBody(req);
-    const type = String(body.type || '').trim();
-    if (!VALID_TYPES.includes(type)) {
-      res.status(400).json({ ok: false, error: '請選擇問題類型' });
+    if (body.arrived === undefined || body.arrived === null) {
+      res.status(400).json({ ok: false, error: '請先選「貨到了嗎」' });
       return;
     }
-    const trackingNos = normalizeTrackingNos(body.trackingNos);
-    const photos = Array.isArray(body.photos) ? body.photos.slice(0, 6) : [];
-    if (type !== '未到貨' && trackingNos.length === 0 && photos.length === 0) {
-      res.status(400).json({ ok: false, error: '請至少掃一個運單號或附一張照片' });
-      return;
+    const arrived = body.arrived === true || body.arrived === 'true' || body.arrived === 1;
+    let trackingNos = normalizeTrackingNos(body.trackingNos);
+    const waybillPhotos = Array.isArray(body.waybillPhotos) ? body.waybillPhotos.slice(0, 2) : [];
+    const problemPhotos = Array.isArray(body.problemPhotos) ? body.problemPhotos.slice(0, 4) : [];
+    const description = String(body.description || '').trim();
+
+    let type, qty, summary = '';
+    if (!arrived) {
+      // 未到貨：只要運單號
+      if (trackingNos.length === 0) {
+        res.status(400).json({ ok: false, error: '請填沒到的運單號' });
+        return;
+      }
+      type = '未到貨';
+      qty = trackingNos.length || 1;
+    } else {
+      // 有到貨：運單（打字/掃／運單照片 OCR）＋ 問題描述
+      if (trackingNos.length === 0 && waybillPhotos.length === 0) {
+        res.status(400).json({ ok: false, error: '請掃／拍／打運單號' });
+        return;
+      }
+      if (!description) {
+        res.status(400).json({ ok: false, error: '請描述問題（例：粉色少3）' });
+        return;
+      }
+      // 沒打運單號但有拍運單照片 → OCR 讀運單號
+      if (trackingNos.length === 0 && waybillPhotos.length) {
+        for (const b64 of waybillPhotos) {
+          try {
+            const txt = await ocrStaffImage(String(b64).replace(/^data:image\/\w+;base64,/, ''));
+            const no = extractTrackingNoFromOcr(txt);
+            if (no) trackingNos.push(no);
+          } catch (e) {
+            console.error('staff_wb_ocr_error', e?.message);
+          }
+        }
+        trackingNos = normalizeTrackingNos(trackingNos);
+      }
+      const cls = await classifyProblem(description);
+      type = cls.type; qty = cls.qty; summary = cls.summary;
     }
-    let qty = Number(body.qty);
-    if (!Number.isFinite(qty) || qty < 1) qty = 1;
 
     let employeeName = String(body.userName || '').trim();
     let userId = '';
@@ -309,11 +424,13 @@ module.exports = async (req, res) => {
     const result = await createStaffReports({
       type,
       qty,
+      description: arrived ? description : '',
+      summary,
       trackingNos,
-      note: String(body.note || '').trim(),
       employeeName,
       sourceKey,
-      photoBase64List: photos,
+      waybillPhotoList: arrived ? waybillPhotos : [],
+      problemPhotoList: arrived ? problemPhotos : [],
     });
 
     res.status(200).json({ ok: true, ...result });

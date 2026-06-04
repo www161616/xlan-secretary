@@ -19,26 +19,25 @@
     padding:16px 16px 120px; max-width:520px; margin:0 auto;
   }
   h1{font-size:22px; color:var(--primary-dark); margin:4px 0 2px; display:flex; align-items:center; gap:8px;}
-  .sub{color:var(--muted); font-size:14px; margin:0 0 18px;}
+  .sub{color:var(--muted); font-size:14px; margin:0 0 16px;}
   .who{font-size:13px; color:var(--muted); margin-bottom:14px;}
   .card{background:var(--white); border:1px solid var(--line); border-radius:16px; padding:16px; margin-bottom:16px; box-shadow:0 1px 0 rgba(146,64,14,.04);}
-  .label{font-weight:700; color:var(--primary-dark); margin:0 0 10px; font-size:15px;}
+  .label{font-weight:700; color:var(--primary-dark); margin:0 0 10px; font-size:16px;}
   .req::after{content:" *"; color:var(--danger);}
-  .type-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
-  .type-btn{
-    border:2px solid var(--line); background:var(--page); color:var(--text);
-    border-radius:14px; padding:14px 8px; font-size:18px; font-weight:700; cursor:pointer;
-    transition:all .12s; display:flex; flex-direction:column; align-items:center; gap:4px;
-  }
-  .type-btn .emoji{font-size:24px;}
-  .type-btn.on{background:var(--primary); border-color:var(--primary); color:var(--white); box-shadow:0 4px 12px rgba(245,158,11,.35);}
-  .qty-row{display:flex; align-items:center; justify-content:center; gap:18px; margin-top:4px;}
-  .qty-btn{width:56px; height:56px; border-radius:50%; border:2px solid var(--primary); background:var(--white); color:var(--primary-dark); font-size:30px; font-weight:700; cursor:pointer; line-height:1;}
-  .qty-btn:active{background:var(--soft);}
-  .qty-val{font-size:40px; font-weight:800; color:var(--primary-dark); min-width:64px; text-align:center;}
-  .qty-hint{text-align:center; color:var(--muted); font-size:13px; margin-top:8px;}
+  .step-badge{display:inline-block; background:var(--primary); color:#fff; border-radius:999px; font-size:13px; font-weight:800; padding:2px 10px; margin-right:6px;}
+
+  .choice-grid{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
+  .choice-btn{border:2px solid var(--line); background:var(--page); color:var(--text); border-radius:16px; padding:22px 10px; font-size:21px; font-weight:800; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:6px; transition:all .12s;}
+  .choice-btn .emoji{font-size:36px; line-height:1;}
+  .choice-btn small{font-size:13px; font-weight:500; color:var(--muted);}
+  .choice-btn.on{color:#fff; box-shadow:0 6px 16px rgba(0,0,0,.15);}
+  .choice-btn.on small{color:rgba(255,255,255,.92);}
+  .choice-btn.arrived.on{background:var(--ok); border-color:var(--ok);}
+  .choice-btn.notarrived.on{background:var(--danger); border-color:var(--danger);}
+
   .scan-btn{width:100%; border:none; background:var(--primary); color:var(--white); border-radius:14px; padding:15px; font-size:18px; font-weight:800; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px;}
   .scan-btn:active{filter:brightness(.95);}
+  .sub-btn{width:100%; border:2px solid var(--primary); background:var(--white); color:var(--primary-dark); border-radius:14px; padding:13px; font-size:16px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; margin-top:10px;}
   .or{text-align:center; color:var(--muted); font-size:13px; margin:12px 0 10px;}
   .manual-row{display:flex; gap:8px;}
   input[type=text], textarea{
@@ -56,6 +55,9 @@
   .photo-thumb .del{position:absolute; top:2px; right:2px; width:24px; height:24px; border-radius:50%; border:none; background:rgba(0,0,0,.55); color:#fff; font-size:15px; cursor:pointer; line-height:24px; text-align:center; padding:0;}
   .add-photo{width:84px; height:84px; border-radius:12px; border:2px dashed var(--line); background:var(--page); color:var(--muted); font-size:30px; cursor:pointer; display:flex; align-items:center; justify-content:center;}
   textarea{min-height:64px; resize:vertical;}
+  .big-desc{min-height:110px; font-size:18px; line-height:1.6;}
+  .hint{color:var(--muted); font-size:13px; margin-top:8px;}
+
   .submit-bar{position:fixed; left:0; right:0; bottom:0; padding:12px 16px calc(12px + env(safe-area-inset-bottom)); background:linear-gradient(to top,var(--page) 70%,transparent); }
   .submit-bar .inner{max-width:520px; margin:0 auto;}
   .submit-btn{width:100%; border:none; background:var(--primary); color:#fff; border-radius:16px; padding:17px; font-size:20px; font-weight:800; cursor:pointer; box-shadow:0 6px 16px rgba(245,158,11,.4);}
@@ -63,7 +65,6 @@
   .toast{position:fixed; left:50%; bottom:96px; transform:translateX(-50%); background:#111827; color:#fff; padding:11px 18px; border-radius:999px; font-size:14px; opacity:0; transition:opacity .2s; pointer-events:none; z-index:50; max-width:90%; text-align:center;}
   .toast.show{opacity:.95;}
   .hidden{display:none !important;}
-  /* 結果頁 */
   #done{text-align:center; padding-top:40px;}
   #done .big{font-size:64px;}
   #done h2{color:var(--ok); font-size:24px; margin:12px 0 6px;}
@@ -86,54 +87,60 @@
 <!-- 表單 -->
 <div id="form" class="hidden">
   <h1>📦 員工回報</h1>
-  <p class="sub">選一下、掃一下就好，小瀾會自動寫進表單。</p>
+  <p class="sub">先選一個，剩下小瀾幫你寫進表單。</p>
   <p class="who" id="who"></p>
 
+  <!-- 第一步：到了沒 -->
   <div class="card">
-    <p class="label req">問題類型</p>
-    <div class="type-grid" id="typeGrid">
-      <button class="type-btn" data-type="少貨"><span class="emoji">📉</span>少貨</button>
-      <button class="type-btn" data-type="破損"><span class="emoji">💥</span>破損</button>
-      <button class="type-btn" data-type="錯貨"><span class="emoji">🔀</span>錯貨</button>
-      <button class="type-btn" data-type="多貨"><span class="emoji">📈</span>多貨</button>
-      <button class="type-btn" data-type="未到貨"><span class="emoji">🚫</span>未到貨</button>
-      <button class="type-btn" data-type="其他"><span class="emoji">❓</span>其他</button>
+    <p class="label req">貨到了嗎？</p>
+    <div class="choice-grid">
+      <button class="choice-btn notarrived" data-arrived="0"><span class="emoji">🚫</span>未到貨<small>整筆都沒收到</small></button>
+      <button class="choice-btn arrived" data-arrived="1"><span class="emoji">✅</span>有到貨<small>要回報問題</small></button>
     </div>
   </div>
 
-  <div class="card" id="qtyCard">
-    <p class="label">數量（有幾件有問題）</p>
-    <div class="qty-row">
-      <button class="qty-btn" id="qtyMinus">−</button>
-      <div class="qty-val" id="qtyVal">1</div>
-      <button class="qty-btn" id="qtyPlus">＋</button>
+  <!-- 路線 A：未到貨 → 只填運單號 -->
+  <div class="card hidden" id="naCard">
+    <p class="label req">運單號（沒到的那幾筆）</p>
+    <div class="manual-row">
+      <input type="text" id="naInput" inputmode="text" placeholder="輸入運單號" />
+      <button class="add-btn" id="naAdd">加入</button>
     </div>
-    <p class="qty-hint">不確定就抓大概，主管會再核對</p>
+    <div class="tn-list" id="tnList"></div>
+    <p class="hint">一筆一筆加；有幾筆沒到就加幾筆。</p>
   </div>
 
-  <div class="card">
-    <p class="label">運單號</p>
+  <!-- 路線 B：有到貨 → 步驟2 運單 -->
+  <div class="card hidden" id="wbCard">
+    <p class="label"><span class="step-badge">步驟2</span>運單號</p>
     <button class="scan-btn" id="scanBtn">📷 掃運單條碼</button>
-    <p class="or">掃不到？直接打也行（可多筆）</p>
+    <label class="sub-btn">🖼 拍運單照片
+      <input type="file" id="wbPhotoInput" accept="image/*" class="hidden" />
+    </label>
+    <div class="photo-area" id="wbPhotoArea"></div>
+    <p class="or">或直接打運單號（可多筆）</p>
     <div class="manual-row">
       <input type="text" id="tnInput" inputmode="text" placeholder="輸入運單號" />
       <button class="add-btn" id="tnAdd">加入</button>
     </div>
-    <div class="tn-list" id="tnList"></div>
+    <div class="tn-list" id="tnList2"></div>
   </div>
 
-  <div class="card">
-    <p class="label">問題照片（破損／少貨拍清楚）</p>
-    <div class="photo-area" id="photoArea">
+  <!-- 路線 B：步驟3 問題照片 -->
+  <div class="card hidden" id="ppCard">
+    <p class="label"><span class="step-badge">步驟3</span>問題商品照片（可多張）</p>
+    <div class="photo-area" id="ppArea">
       <label class="add-photo">＋
-        <input type="file" id="photoInput" accept="image/*" multiple class="hidden" />
+        <input type="file" id="ppInput" accept="image/*" multiple class="hidden" />
       </label>
     </div>
   </div>
 
-  <div class="card">
-    <p class="label">備註（選填）</p>
-    <textarea id="noteInput" placeholder="想補充的就打這（例：外箱破一個角）"></textarea>
+  <!-- 路線 B：描述問題 -->
+  <div class="card hidden" id="descCard">
+    <p class="label req">描述問題</p>
+    <textarea id="descInput" class="big-desc" placeholder="例：&#10;粉色少3、白色少2&#10;外箱破一個角"></textarea>
+    <p class="hint">用自己的話講就好，小瀾會自動看懂。</p>
   </div>
 </div>
 
@@ -161,10 +168,9 @@
   var GROUP_ID = qs.get('g') || '';
   var API_URL = '/api/staff-report';
   // 後備 LIFF ID（LIFF ID 非機密、本來就會出現在網址）。
-  // 後端 STAFF_LIFF_ID 有設就以後端為準；沒設也能靠這個開起來。
   var FALLBACK_LIFF_ID = '2009806013-E5IVkIFT';
 
-  var state = { type:'', qty:1, trackingNos:[], photos:[], profile:null, idToken:'' };
+  var state = { arrived:null, trackingNos:[], waybillPhotos:[], problemPhotos:[], profile:null, idToken:'' };
 
   var el = function(id){ return document.getElementById(id); };
   function toast(msg){
@@ -186,7 +192,6 @@
     })
     .then(function(){
       if (!liff.isLoggedIn()) { liff.login(); return; }
-      // 群組 ID 用 LIFF context 取，比網址參數可靠
       try {
         var ctx = liff.getContext();
         if (ctx && (ctx.groupId || ctx.roomId)) GROUP_ID = ctx.groupId || ctx.roomId;
@@ -197,7 +202,7 @@
         state.profile = arr[0];
         state.idToken = arr[1] || '';
         el('who').textContent = state.profile ? ('回報人：' + state.profile.displayName) : '';
-        hide('boot'); show('form'); show('submitBar');
+        hide('boot'); show('form');
       });
     })
     .catch(function(e){
@@ -205,31 +210,33 @@
         '<br><br>請確認這是從 LINE 開啟，或 LIFF 設定正確。';
     });
 
-  // ---- 問題類型 ----
-  el('typeGrid').addEventListener('click', function(e){
-    var btn = e.target.closest('.type-btn'); if (!btn) return;
-    state.type = btn.dataset.type;
-    Array.prototype.forEach.call(document.querySelectorAll('.type-btn'), function(b){ b.classList.remove('on'); });
-    btn.classList.add('on');
-    // 未到貨：整筆沒到，不用數數量
-    if (state.type === '未到貨') { hide('qtyCard'); state.qty = 1; }
-    else { show('qtyCard'); }
+  // ---- 到了沒（分路）----
+  Array.prototype.forEach.call(document.querySelectorAll('.choice-btn'), function(btn){
+    btn.addEventListener('click', function(){
+      state.arrived = btn.dataset.arrived === '1';
+      Array.prototype.forEach.call(document.querySelectorAll('.choice-btn'), function(b){ b.classList.remove('on'); });
+      btn.classList.add('on');
+      if (state.arrived) {
+        hide('naCard'); show('wbCard'); show('ppCard'); show('descCard');
+      } else {
+        show('naCard'); hide('wbCard'); hide('ppCard'); hide('descCard');
+      }
+      show('submitBar');
+    });
   });
 
-  // ---- 數量 ----
-  function renderQty(){ el('qtyVal').textContent = state.qty; }
-  el('qtyMinus').addEventListener('click', function(){ if (state.qty > 1) { state.qty--; renderQty(); } });
-  el('qtyPlus').addEventListener('click', function(){ if (state.qty < 999) { state.qty++; renderQty(); } });
-
-  // ---- 運單號 ----
+  // ---- 運單號（兩條路共用 state.trackingNos）----
   function renderTn(){
-    var box = el('tnList'); box.innerHTML = '';
-    state.trackingNos.forEach(function(tn, i){
-      var d = document.createElement('div'); d.className = 'tn-item';
-      d.innerHTML = '<span>' + tn + '</span>';
-      var del = document.createElement('button'); del.className = 'del'; del.textContent = '✕';
-      del.onclick = function(){ state.trackingNos.splice(i,1); renderTn(); };
-      d.appendChild(del); box.appendChild(d);
+    [el('tnList'), el('tnList2')].forEach(function(box){
+      if (!box) return;
+      box.innerHTML = '';
+      state.trackingNos.forEach(function(tn, i){
+        var d = document.createElement('div'); d.className = 'tn-item';
+        d.innerHTML = '<span>' + tn + '</span>';
+        var del = document.createElement('button'); del.className = 'del'; del.textContent = '✕';
+        del.onclick = function(){ state.trackingNos.splice(i,1); renderTn(); };
+        d.appendChild(del); box.appendChild(d);
+      });
     });
   }
   function addTn(raw){
@@ -238,18 +245,20 @@
     if (state.trackingNos.indexOf(v) !== -1) { toast('這筆運單已經加過了'); return; }
     state.trackingNos.push(v); renderTn();
   }
+  el('naAdd').addEventListener('click', function(){ addTn(el('naInput').value); el('naInput').value=''; });
+  el('naInput').addEventListener('keydown', function(e){ if (e.key==='Enter'){ e.preventDefault(); el('naAdd').click(); } });
   el('tnAdd').addEventListener('click', function(){ addTn(el('tnInput').value); el('tnInput').value=''; });
-  el('tnInput').addEventListener('keydown', function(e){ if (e.key === 'Enter'){ e.preventDefault(); el('tnAdd').click(); } });
+  el('tnInput').addEventListener('keydown', function(e){ if (e.key==='Enter'){ e.preventDefault(); el('tnAdd').click(); } });
 
   el('scanBtn').addEventListener('click', function(){
-    if (!liff.scanCodeV2) { toast('這支手機不支援掃碼，請直接打字'); return; }
+    if (!liff.scanCodeV2) { toast('這支手機不支援掃碼，請拍照或直接打'); return; }
     liff.scanCodeV2().then(function(r){
       if (r && r.value) { addTn(r.value); toast('掃到：' + r.value); }
-      else { toast('沒掃到，再試一次或直接打字'); }
-    }).catch(function(){ toast('掃碼取消／不支援，請直接打字'); });
+      else { toast('沒掃到，再試一次或直接打'); }
+    }).catch(function(){ toast('掃碼取消／不支援，請拍照或直接打'); });
   });
 
-  // ---- 照片（壓縮後存 base64）----
+  // ---- 照片共用：壓縮 ----
   function resizeToDataUrl(file, maxSide, quality){
     return new Promise(function(resolve, reject){
       var reader = new FileReader();
@@ -268,47 +277,71 @@
       reader.onerror = reject; reader.readAsDataURL(file);
     });
   }
-  function renderPhotos(){
-    var area = el('photoArea');
-    Array.prototype.forEach.call(area.querySelectorAll('.photo-thumb'), function(n){ n.remove(); });
-    var addBtn = area.querySelector('.add-photo');
-    state.photos.forEach(function(data, i){
+
+  // ---- 運單照片（步驟2，最多 2 張）----
+  function renderWbPhotos(){
+    var area = el('wbPhotoArea'); area.innerHTML = '';
+    state.waybillPhotos.forEach(function(data, i){
       var t = document.createElement('div'); t.className = 'photo-thumb';
       var im = document.createElement('img'); im.src = data; t.appendChild(im);
       var del = document.createElement('button'); del.className = 'del'; del.textContent = '✕';
-      del.onclick = function(){ state.photos.splice(i,1); renderPhotos(); };
+      del.onclick = function(){ state.waybillPhotos.splice(i,1); renderWbPhotos(); };
+      t.appendChild(del); area.appendChild(t);
+    });
+  }
+  el('wbPhotoInput').addEventListener('change', function(e){
+    var f = (e.target.files || [])[0]; e.target.value='';
+    if (!f) return;
+    if (state.waybillPhotos.length >= 2) { toast('運單照片最多 2 張'); return; }
+    resizeToDataUrl(f, 1280, 0.7).then(function(u){ state.waybillPhotos.push(u); renderWbPhotos(); })
+      .catch(function(){ toast('照片處理失敗'); });
+  });
+
+  // ---- 問題照片（步驟3，最多 4 張）----
+  function renderPp(){
+    var area = el('ppArea');
+    Array.prototype.forEach.call(area.querySelectorAll('.photo-thumb'), function(n){ n.remove(); });
+    var addBtn = area.querySelector('.add-photo');
+    state.problemPhotos.forEach(function(data, i){
+      var t = document.createElement('div'); t.className = 'photo-thumb';
+      var im = document.createElement('img'); im.src = data; t.appendChild(im);
+      var del = document.createElement('button'); del.className = 'del'; del.textContent = '✕';
+      del.onclick = function(){ state.problemPhotos.splice(i,1); renderPp(); };
       t.appendChild(del);
       area.insertBefore(t, addBtn);
     });
-    addBtn.style.display = state.photos.length >= 4 ? 'none' : 'flex';
+    addBtn.style.display = state.problemPhotos.length >= 4 ? 'none' : 'flex';
   }
-  el('photoInput').addEventListener('change', function(e){
+  el('ppInput').addEventListener('change', function(e){
     var files = Array.prototype.slice.call(e.target.files || []);
     e.target.value = '';
-    var room = 4 - state.photos.length;
+    var room = 4 - state.problemPhotos.length;
     if (room <= 0) { toast('最多 4 張'); return; }
     files = files.slice(0, room);
     Promise.all(files.map(function(f){ return resizeToDataUrl(f, 1024, 0.6); }))
-      .then(function(urls){ urls.forEach(function(u){ state.photos.push(u); }); renderPhotos(); })
+      .then(function(urls){ urls.forEach(function(u){ state.problemPhotos.push(u); }); renderPp(); })
       .catch(function(){ toast('照片處理失敗'); });
   });
 
   // ---- 送出 ----
   el('submitBtn').addEventListener('click', function(){
-    if (!state.type) { toast('先選問題類型'); return; }
-    if (state.type !== '未到貨' && state.trackingNos.length === 0 && state.photos.length === 0) {
-      toast('至少掃一個運單號或拍一張照片'); return;
+    if (state.arrived === null) { toast('先選「貨到了嗎」'); return; }
+    if (state.arrived === false) {
+      if (state.trackingNos.length === 0) { toast('請填沒到的運單號'); el('naInput').focus(); return; }
+    } else {
+      if (state.trackingNos.length === 0 && state.waybillPhotos.length === 0) { toast('請掃／拍／打運單號'); return; }
+      if (!(el('descInput').value || '').trim()) { toast('請描述問題（例：粉色少3）'); el('descInput').focus(); return; }
     }
     var btn = el('submitBtn'); btn.disabled = true; btn.textContent = '送出中…';
     fetch(API_URL, {
       method:'POST',
       headers:{ 'Content-Type':'application/json' },
       body: JSON.stringify({
-        type: state.type,
-        qty: state.qty,
+        arrived: state.arrived,
         trackingNos: state.trackingNos,
-        photos: state.photos,
-        note: el('noteInput').value || '',
+        waybillPhotos: state.waybillPhotos,
+        problemPhotos: state.problemPhotos,
+        description: state.arrived ? (el('descInput').value || '') : '',
         groupId: GROUP_ID,
         userName: state.profile ? state.profile.displayName : '',
         idToken: state.idToken,
@@ -324,8 +357,8 @@
   function showDone(data){
     hide('form'); hide('submitBar'); show('done');
     var n = data.created || 0;
-    el('doneTitle').textContent = '回報完成！';
-    el('doneSub').textContent = state.type + '　共 ' + n + ' 筆運單' + (data.photoCount ? '　含 ' + data.photoCount + ' 張照片' : '');
+    var judged = data.problemType ? ('小瀾判斷：' + data.problemType + (data.problemQty ? ' ' + data.problemQty : '') + '　') : '';
+    el('doneSub').textContent = judged + '共 ' + n + ' 筆運單';
     var box = el('doneDetail'); box.innerHTML = '';
     (data.results || []).forEach(function(r){
       var li = document.createElement('div'); li.className = 'li';
@@ -342,11 +375,13 @@
     else location.reload();
   });
   el('againBtn').addEventListener('click', function(){
-    state.type=''; state.qty=1; state.trackingNos=[]; state.photos=[];
-    Array.prototype.forEach.call(document.querySelectorAll('.type-btn'), function(b){ b.classList.remove('on'); });
-    renderQty(); renderTn(); renderPhotos(); el('noteInput').value=''; show('qtyCard');
+    state = { arrived:null, trackingNos:[], waybillPhotos:[], problemPhotos:[], profile:state.profile, idToken:state.idToken };
+    Array.prototype.forEach.call(document.querySelectorAll('.choice-btn'), function(b){ b.classList.remove('on'); });
+    renderTn(); renderWbPhotos(); renderPp();
+    el('naInput').value=''; el('tnInput').value=''; el('descInput').value='';
+    hide('naCard'); hide('wbCard'); hide('ppCard'); hide('descCard');
     var btn = el('submitBtn'); btn.disabled=false; btn.textContent='送出回報';
-    hide('done'); show('form'); show('submitBar'); window.scrollTo(0,0);
+    hide('done'); show('form'); hide('submitBar'); window.scrollTo(0,0);
   });
 })();
 </script>
