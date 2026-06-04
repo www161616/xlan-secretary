@@ -354,9 +354,21 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
   // 前端開啟表單時先 GET 拿 LIFF ID（避免 liff.state 包住網址參數讀不到）
   if (req.method === 'GET') {
+    let googleAuth = 'untested';
+    if (req.url && req.url.includes('diag')) {
+      try {
+        const c = getGoogleOAuthClient();
+        const t = await c.getAccessToken();
+        googleAuth = (t && t.token) ? 'ok' : 'no-token';
+      } catch (e) {
+        googleAuth = 'fail:' + (e?.response?.data?.error || e?.message || 'err');
+      }
+    }
     res.status(200).json({
       ok: true,
       liffId: (STAFF_LIFF_ID || '').trim(),
+      googleAuth,
+      spreadsheetIdTail: STAFF_REPORT_SPREADSHEET_ID.slice(-6),
       // 診斷用：只回報變數有沒有設（true/false），不洩漏值
       env: {
         spreadsheet: !!process.env.STAFF_REPORT_SPREADSHEET_ID,
