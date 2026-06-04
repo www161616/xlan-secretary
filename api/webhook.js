@@ -562,6 +562,10 @@ function parseSimpleExpenseText(text) {
   if (!raw || raw.length > 48 || /https?:\/\//i.test(raw)) return null;
   if (/(多少|幾筆|摘要|帳務|收支|查詢|清單|網址|系統|運單|單號)/.test(raw)) return null;
   if (/(月薪|薪資承諾|薪水承諾)/.test(raw)) return null;
+  // 含刪除/移除/清掉等字眼是「要刪帳」不是「要記帳」，絕不可再記一筆
+  if (/(刪|移除|清空|清掉|取消這筆|不要記|不用記|記錯)/.test(raw)) return null;
+  // 小瀾自己的摘要行（「私人支出 餐飲 NT$210（買飲料）」）被貼回來時，不可當成新記帳
+  if (/^(私人支出|公司支出|私人收入|公司收入)/.test(raw)) return null;
 
   const amountMatch = raw.match(/(?:NT\$?|[$＄])?\s*(\d{1,3}(?:,\d{3})+|\d+)(?:\s*元)?/i);
   if (!amountMatch) return null;
