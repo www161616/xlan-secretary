@@ -155,6 +155,63 @@ async function loadExpenseFocus(sourceKey) {
   return expense;
 }
 
+const EXPENSE_DUP_FOCUS_TTL_MS = 10 * 60 * 1000;
+
+function expenseDupFocusKey(sourceKey) {
+  return `expense_dup_focus:${sourceKey}`;
+}
+
+async function saveExpenseDupFocus(sourceKey, ids, sample) {
+  if (!sourceKey || !Array.isArray(ids) || ids.length === 0) return;
+  await supabase.from('xlan_kv').upsert({
+    key: expenseDupFocusKey(sourceKey),
+    value: JSON.stringify({
+      ids,
+      category: sample?.category || '',
+      amount: sample?.amount ?? '',
+      updated_at: new Date().toISOString(),
+    }),
+  });
+}
+
+async function clearExpenseDupFocus(sourceKey) {
+  if (!sourceKey) return;
+  await supabase.from('xlan_kv').delete().eq('key', expenseDupFocusKey(sourceKey));
+}
+
+async function loadExpenseDupFocus(sourceKey) {
+  if (!sourceKey) return null;
+  const { data } = await supabase.from('xlan_kv').select('value').eq('key', expenseDupFocusKey(sourceKey)).single();
+  if (!data?.value) return null;
+  let focus;
+  try {
+    focus = JSON.parse(data.value);
+  } catch {
+    return null;
+  }
+  const updatedAt = new Date(focus.updated_at || 0).getTime();
+  if (!Array.isArray(focus.ids) || focus.ids.length === 0 || !Number.isFinite(updatedAt) || Date.now() - updatedAt > EXPENSE_DUP_FOCUS_TTL_MS) {
+    return null;
+  }
+  return focus;
+}
+
+// 把上一筆刪除後偵測到的「重複同項」一次清掉
+async function deleteDuplicateExpenses(sourceKey) {
+  const focus = await loadExpenseDupFocus(sourceKey);
+  if (!focus) return '沒有待清理的重複記帳（可能超過 10 分鐘了）。你可以先「今天帳務」看清單再處理。';
+  const { data, error } = await supabase
+    .from('xlan_expenses')
+    .delete()
+    .in('id', focus.ids)
+    .select();
+  await clearExpenseDupFocus(sourceKey);
+  if (error) throw new Error(error.message);
+  const count = Array.isArray(data) ? data.length : 0;
+  if (count === 0) return '那些重複記帳已經不在了，不用再清。';
+  return `已清掉 ${count} 筆重複的${focus.category ? `「${focus.category} NT$${focus.amount}」` : '記帳'}。`;
+}
+
 async function getExpenses(period) {
   const now = new Date();
   let startDate;
@@ -189,15 +246,50 @@ async function updateExpenseAccount(expenseId, account) {
   return `已改成${label}帳：${data.category} NT$${data.amount}`;
 }
 
-async function deleteExpense(expenseId) {
+async function deleteExpense(expenseId, sourceKey = '') {
   const { data, error } = await supabase
     .from('xlan_expenses')
     .delete()
     .eq('id', expenseId)
-    .select()
-    .single();
+    .select();
   if (error) throw new Error(error.message);
-  return `已刪除記帳：${data.category} NT$${data.amount}`;
+  const deleted = Array.isArray(data) ? data[0] : data;
+  if (!deleted) return '找不到那筆記帳，可能已經刪掉了。';
+
+  // 驗證：刪完再查一次，確認那筆真的不見了（香奈遇過「說刪了卻還在」）
+  const { data: stillThere } = await supabase
+    .from('xlan_expenses')
+    .select('id')
+    .eq('id', expenseId);
+  if (stillThere && stillThere.length > 0) {
+    return `⚠️ 嘗試刪除「${deleted.category} NT$${deleted.amount}」但它還在，可能有權限或同步問題，請再試一次或到後台確認。`;
+  }
+
+  // 偵測重複同項（同類別/金額/收支/帳戶/備註），主動提醒可一起清掉
+  let dupNote = '';
+  const { data: candidates } = await supabase
+    .from('xlan_expenses')
+    .select('id, note')
+    .eq('category', deleted.category)
+    .eq('amount', deleted.amount)
+    .eq('type', deleted.type)
+    .eq('account', deleted.account);
+  const normNote = (n) => String(n ?? '').trim();
+  const dupIds = (candidates || [])
+    .filter((row) => normNote(row.note) === normNote(deleted.note))
+    .map((row) => row.id);
+  if (dupIds.length > 0) {
+    if (sourceKey) {
+      await saveExpenseDupFocus(sourceKey, dupIds, deleted);
+      dupNote = `\n⚠️ 另外還有 ${dupIds.length} 筆一模一樣的（${deleted.category} NT$${deleted.amount}）。如果是重複記的，回「刪掉重複」可一起清掉。`;
+    } else {
+      dupNote = `\n⚠️ 另外還有 ${dupIds.length} 筆一模一樣的（${deleted.category} NT$${deleted.amount}），可到清單逐筆處理。`;
+    }
+  } else if (sourceKey) {
+    await clearExpenseDupFocus(sourceKey);
+  }
+
+  return `已刪除記帳：${deleted.category} NT$${deleted.amount}${dupNote}`;
 }
 
 async function getLatestExpense() {
@@ -217,10 +309,10 @@ async function updateLatestExpenseAccount(account) {
   return updateExpenseAccount(latest.id, account);
 }
 
-async function deleteLatestExpense() {
+async function deleteLatestExpense(sourceKey = '') {
   const latest = await getLatestExpense();
   if (!latest) return '找不到最近一筆記帳。';
-  return deleteExpense(latest.id);
+  return deleteExpense(latest.id, sourceKey);
 }
 
 async function updateLatestExpenseCategory(category) {
@@ -375,7 +467,7 @@ async function resolveFocusedExpenseReply(text, sourceKey) {
     return [{ type: 'text', text: await updateExpenseCategory(expense.id, match[2].trim()) }];
   }
   if (/^(刪掉|刪除|刪除這筆|取消這筆|記錯了|不要記)$/.test(raw)) {
-    const result = await deleteExpense(expense.id);
+    const result = await deleteExpense(expense.id, sourceKey);
     await clearExpenseFocus(sourceKey);
     return [{ type: 'text', text: result }];
   }
@@ -4459,15 +4551,18 @@ async function handleDirectFastCommand(text, focusKey = '') {
     const expenseId = match[1];
     const action = match[2];
     if (action === '分類') return [buildExpenseCategoryFlex(expenseId)];
-    if (action === '刪除') return [{ type: 'text', text: await deleteExpense(expenseId) }];
+    if (action === '刪除') return [{ type: 'text', text: await deleteExpense(expenseId, focusKey) }];
     return [{ type: 'text', text: await updateExpenseAccount(expenseId, action === '公司' ? 'business' : 'personal') }];
+  }
+  if (/^(刪掉重複|刪除重複|清掉重複|清除重複|重複的也刪|重複也刪|重複一起刪|一起刪掉重複)$/.test(text)) {
+    return [{ type: 'text', text: await deleteDuplicateExpenses(focusKey) }];
   }
   if (/^最近一筆算(公司|私人)$/.test(text)) {
     const match = text.match(/^最近一筆算(公司|私人)$/);
     return [{ type: 'text', text: await updateLatestExpenseAccount(match[1] === '公司' ? 'business' : 'personal') }];
   }
   if (/^刪除最近一筆記帳$/.test(text)) {
-    return [{ type: 'text', text: await deleteLatestExpense() }];
+    return [{ type: 'text', text: await deleteLatestExpense(focusKey) }];
   }
   if (/^最近一筆分類$/.test(text)) {
     const latest = await getLatestExpense();
@@ -4691,15 +4786,17 @@ async function handleDirectMessage(event) {
     if (action === '分類') {
       replyMessages = [buildExpenseCategoryFlex(expenseId)];
     } else if (action === '刪除') {
-      replyMessages = [{ type: 'text', text: await deleteExpense(expenseId) }];
+      replyMessages = [{ type: 'text', text: await deleteExpense(expenseId, focusKey) }];
     } else {
       replyMessages = [{ type: 'text', text: await updateExpenseAccount(expenseId, action === '公司' ? 'business' : 'personal') }];
     }
+  } else if (/^(刪掉重複|刪除重複|清掉重複|清除重複|重複的也刪|重複也刪|重複一起刪|一起刪掉重複)$/.test(text)) {
+    replyMessages = [{ type: 'text', text: await deleteDuplicateExpenses(focusKey) }];
   } else if (/^最近一筆算(公司|私人)$/.test(text)) {
     const match = text.match(/^最近一筆算(公司|私人)$/);
     replyMessages = [{ type: 'text', text: await updateLatestExpenseAccount(match[1] === '公司' ? 'business' : 'personal') }];
   } else if (/^刪除最近一筆記帳$/.test(text)) {
-    replyMessages = [{ type: 'text', text: await deleteLatestExpense() }];
+    replyMessages = [{ type: 'text', text: await deleteLatestExpense(focusKey) }];
   } else if (/^最近一筆分類$/.test(text)) {
     const latest = await getLatestExpense();
     replyMessages = latest ? [buildExpenseCategoryFlex(latest.id)] : [{ type: 'text', text: '找不到最近一筆記帳。' }];

@@ -76,7 +76,7 @@ xlan-secretary/
 4. **群組靜默監控** — 群組訊息用 Haiku 判斷是否為待辦，存入但不回覆
 5. **群組 @ 主動回應** — 被 @ 時分析 quote 原文或整則訊息，支援 tool use
 6. **記帳** — `save_expense` tool，自動分類（餐飲/交通/購物等），支援 personal/business 分帳
-7. **記帳 Flex Message** — 記帳完成回傳彩色卡片（紅=支出、綠=收入）
+7. **記帳 Flex Message** — 記帳完成回傳彩色卡片（紅=支出、綠=收入）；刪除記帳會「刪完再查一次」驗證真的不見了，並偵測「同類別＋金額＋收支＋帳戶＋備註」的重複，主動提醒「還有 N 筆一樣的」，回「刪掉重複」可一次清掉（10 分鐘內有效）
 8. **圖片記帳** — 下載 LINE 圖片 → Claude vision 判讀 → 自動存帳 + 📷 標籤
 9. **收支查詢** — `get_expenses` tool，支援 today/this_week/this_month
 10. **筆記** — `save_note` tool，自動加標籤
