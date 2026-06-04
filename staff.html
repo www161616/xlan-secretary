@@ -160,6 +160,9 @@
   var qs = new URLSearchParams(location.search);
   var GROUP_ID = qs.get('g') || '';
   var API_URL = '/api/staff-report';
+  // 後備 LIFF ID（LIFF ID 非機密、本來就會出現在網址）。
+  // 後端 STAFF_LIFF_ID 有設就以後端為準；沒設也能靠這個開起來。
+  var FALLBACK_LIFF_ID = '2009806013-E5IVkIFT';
 
   var state = { type:'', qty:1, trackingNos:[], photos:[], profile:null, idToken:'' };
 
@@ -177,8 +180,8 @@
   fetch(API_URL, { method:'GET' })
     .then(function(r){ return r.json(); })
     .then(function(cfg){
-      var liffId = String((cfg && cfg.liffId) || qs.get('liff') || '').trim();
-      if (!liffId) throw new Error('後端沒有設定 LIFF ID（STAFF_LIFF_ID）');
+      var liffId = String((cfg && cfg.liffId) || qs.get('liff') || FALLBACK_LIFF_ID || '').trim();
+      if (!liffId) throw new Error('沒有 LIFF ID');
       return liff.init({ liffId: liffId });
     })
     .then(function(){
