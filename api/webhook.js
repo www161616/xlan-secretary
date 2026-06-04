@@ -2166,11 +2166,13 @@ function isStaffReportTrigger(text) {
 }
 
 function buildStaffReportLiffUrl(source) {
-  if (!STAFF_LIFF_ID) return '';
+  // 環境變數有設且非空白就用它；否則用已知的員工回報 LIFF ID 當後備（LIFF ID 非機密）
+  const liffId = (STAFF_LIFF_ID || '').trim() || '2009806013-E5IVkIFT';
+  if (!liffId) return '';
   const groupId = (source && (source.groupId || source.roomId)) || '';
-  const params = new URLSearchParams({ liff: STAFF_LIFF_ID });
+  const params = new URLSearchParams({ liff: liffId });
   if (groupId) params.set('g', groupId);
-  return `https://liff.line.me/${STAFF_LIFF_ID}?${params.toString()}`;
+  return `https://liff.line.me/${liffId}?${params.toString()}`;
 }
 
 function buildStaffReportGuideFlex(source) {
