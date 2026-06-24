@@ -157,3 +157,9 @@ ALTER TABLE xlan_todos ADD COLUMN IF NOT EXISTS source_person text;
 ALTER TABLE xlan_todos ADD COLUMN IF NOT EXISTS done_at timestamptz;
 ALTER TABLE xlan_todos ADD COLUMN IF NOT EXISTS project_id uuid REFERENCES xlan_projects(id);
 ALTER TABLE xlan_todos ADD COLUMN IF NOT EXISTS project_name text;
+
+-- 丸十支出記帳（#支出）所需欄位
+-- entity：記帳所屬主體（丸十／央廚／匯洲／全民…），私訊記帳維持 null，不影響既有 personal/business。
+ALTER TABLE xlan_expenses ADD COLUMN IF NOT EXISTS entity text;
+-- sheet_row：該筆對應「丸十支出」Google Sheet 的列號，供事後改分類／刪除時精準同步該列。沒寫進 Sheet 的記帳維持 null。
+ALTER TABLE xlan_expenses ADD COLUMN IF NOT EXISTS sheet_row integer;
