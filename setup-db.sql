@@ -167,3 +167,5 @@ ALTER TABLE xlan_expenses ADD COLUMN IF NOT EXISTS sheet_row integer;
 -- 丸十零用金管理（#補錢／#餘額）：
 -- type 欄位為自由 text，新增值 'deposit' 代表「零用金補入」（與支出 'expense' 區分），不需 migration。
 -- 零用金餘額 ＝ 補入合計(type='deposit') − 支出合計(type='expense')，皆限同一 entity（如 '丸十'）。
+-- recorder：記帳／補錢的記錄人 LINE 顯示名，供事後查核「是誰補的／記的」。目前僅 #補錢 會寫入，既有記帳維持 null。
+ALTER TABLE xlan_expenses ADD COLUMN IF NOT EXISTS recorder text;

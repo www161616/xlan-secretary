@@ -108,7 +108,7 @@ async function createCalendarEvent({ title, date, time, duration_minutes, locati
 }
 
 // --- 記帳功能 ---
-async function saveExpense({ amount, category, note, type, account, entity }) {
+async function saveExpense({ amount, category, note, type, account, entity, recorder }) {
   const row = {
     amount,
     category,
@@ -118,6 +118,9 @@ async function saveExpense({ amount, category, note, type, account, entity }) {
   };
   // entity（主體：丸十／央廚…）只有帶值時才寫入，私訊記帳維持 null，不影響既有 personal/business 行為。
   if (entity) row.entity = entity;
+  // recorder（記帳／補錢的記錄人 LINE 顯示名）：比照 entity「有值才寫」，不帶就不寫，
+  // 既有 #支出／私訊記帳呼叫（不傳 recorder）行為完全不變。目前僅 #補錢 會帶，供事後查核「誰補的」。
+  if (recorder) row.recorder = recorder;
   const { data, error } = await supabase.from('xlan_expenses').insert(row).select();
   if (error) throw new Error(error.message);
   return data[0];
@@ -324,11 +327,18 @@ async function getExpenses(period) {
   // 過濾掉「已刪除」列：用 deleted IS NOT TRUE（.not is true），保留 deleted=null（既有所有資料）與 false，
   // 只排除明確標為 true 的列。即使本案是 hard delete、且 DB 刪除失敗會回滾 Sheet（P1-B），
   // 這層仍是防禦：萬一未來引入 soft delete、或回滾失敗殘留半標記，摘要與加總都不會吃到已刪資料（P2-4）。
+  //
+  // 【P1 修正】排除 type='deposit'（零用金補入）：補入不屬於個人/公司收支流水，
+  // 既有「本月記帳」明細與儀表板會把非 income 一律當支出顯示（紅字、負號），補入若混入會被誤判。
+  // 在此單一查詢點排除即可涵蓋所有呼叫端（明細／摘要／清空待刪清單／盤點與工作報告帳務區），
+  // 且 expense/income 的既有行為完全不變（沒有 deposit 資料時，結果與修改前一模一樣）。
+  // 零用金餘額另走 getPettyCashBalance（獨立查詢、自帶 type='deposit' 加總），不受此排除影響。
   const { data } = await supabase
     .from('xlan_expenses')
     .select('*')
     .gte('created_at', startDate.toISOString())
     .not('deleted', 'is', true)
+    .neq('type', 'deposit')
     .order('created_at', { ascending: false });
 
   return data || [];
@@ -1131,8 +1141,12 @@ async function getPettyCashBalance(entity) {
 
 // --- 任務2：解析 #補錢 文字 ---
 // 輸入是「已被 stripGroupHashTrigger 去掉 #、但仍含『補錢』前綴」的字串，例如「補錢 10000 六月零用金」。
-// 沿用 #支出 的金額正則（千分位 , ／NT$ ／元），取最後一個數字當金額。
-// 回傳 { amount, note } 或 null（無金額／金額 ≤ 0／負號開頭）。
+// 沿用 #支出 的金額寫法（千分位 , ／NT$ ／元），取最後一個數字當金額。
+// 回傳 { amount, note } 或 null（無金額／金額 ≤ 0）。
+//
+// 【P0 修正】金額擷取要「偵測負號」：負號可能緊貼數字（-1000）、被空白隔開（現金 -1000）、
+// 或被貨幣符號隔開（NT$ -1000）。一律把負號納入 token，解析出 ≤ 0 的金額直接回 null，
+// 絕不能把負數吃成正數補入（金錢算錯）。
 function parseMarutenTopupText(text) {
   let raw = String(text || '').trim();
   if (!raw) return null;
@@ -1140,16 +1154,15 @@ function parseMarutenTopupText(text) {
   raw = raw.replace(/^補錢[\s:：]*/, '').trim();
   if (!raw) return null;
 
-  // 防呆：金額前緊貼負號（如「-100」）視為無效，避免把負數當成正數補入（amountRe 只抓正數，會把 -100 抓成 100）。
-  if (/^-\s*\d/.test(raw)) return null;
-
-  // 抽金額：支援 1,234 / NT$3000 / 3000元 等寫法，取最後一個數字當金額（備註在前、金額在後較自然）。
-  const amountRe = /(?:NT\$?|[$＄])?\s*(\d{1,3}(?:,\d{3})+|\d+)(?:\s*元)?/gi;
+  // 抽金額：支援 1,234 / NT$3000 / 3000元 等寫法；負號 [-－] 可選，可緊貼數字或夾在
+  // 貨幣符號與數字之間（如「NT$ -1000」「現金 -1000」）。取最後一個數字當金額（備註在前、金額在後較自然）。
+  const amountRe = /(?:NT\$?|[$＄])?\s*([-－]?\s*\d{1,3}(?:,\d{3})+|[-－]?\s*\d+)(?:\s*元)?/gi;
   let match;
   let last = null;
   while ((match = amountRe.exec(raw)) !== null) last = match;
   if (!last) return null;
-  const amount = Number(String(last[1]).replace(/,/g, ''));
+  // 還原數值：去掉千分位逗號與空白，保留負號 → Number() 才能正確得到負數並被 <= 0 擋下。
+  const amount = Number(String(last[1]).replace(/[,\s]/g, '').replace(/－/g, '-'));
   if (!Number.isFinite(amount) || amount <= 0) return null;
 
   // 備註 = 原字串扣掉金額那段文字（含其尾綴「元」），去頭尾雜符。
@@ -1159,20 +1172,28 @@ function parseMarutenTopupText(text) {
   return { amount, note };
 }
 
+// #補錢 後若緊接這些「純查詢詞」，視為查詢句（看明細／看表）而非補錢記帳，不觸發（沿用 #支出 的查詢詞慣例）。
+// 用「補錢」後第一個詞是否完全等於查詢詞來判斷，故品項或備註（如「現金」「六月零用金」）不會被誤判成查詢。
+const TOPUP_QUERY_WORDS = ['明細', '紀錄', '記錄', '清單', '查詢', '統計', '報表', '總計', '彙總', '表'];
+
 // 判斷一則原始群組訊息是不是 #補錢 記帳指令。
-// 條件：以「#補錢／＃補錢」開頭，且 ——
-//   (a) 「補錢」後面緊接空白／冒號／結尾／數字（明確的補錢指令，含只打「#補錢」想看用法），或
-//   (b) 去掉 # 後能被 parseMarutenTopupText 解析成功（涵蓋「#補錢10000」這種無空白黏著）。
-// 這樣可精準排除「#補錢明細」「#補錢紀錄」這類含「補錢」開頭卻無金額的查詢句，不誤記。
+// 條件：以「#補錢／＃補錢」開頭，且「補錢」後面**不是**純查詢詞 → 一律命中，
+// 交給 handleMarutenTopup 統一回應（金額無效就回用法提示），**不 fall through 靜默**。
+// 【P0／P1 修正】重點：負數（「#補錢 -1000」「#補錢 現金 -1000」「#補錢 NT$ -1000」）也要命中，
+// 不能因 parse=null 而回 false 讓訊息漏接；唯獨「#補錢明細／#補錢紀錄」等查詢句要排除（不誤記）。
 function isMarutenTopupTrigger(text) {
   const raw = String(text || '').trim();
   if (!/^[#＃]\s*補錢/.test(raw)) return false;
   const body = stripGroupHashTrigger(raw).replace(/@\S+/g, '').trim();
-  // 只打「#補錢」或「#補錢 」「#補錢:」→ 命中（走用法提示分支）。
-  if (/^補錢[\s:：]*$/.test(body)) return true;
-  // 「補錢」後緊接數字（含 NT$／$／全形＄）→ 一定是補錢；其餘交給 parse 判定。
-  if (/^補錢[\s:：]*(?:NT\$?|[$＄])?\s*\d/.test(body)) return true;
-  return parseMarutenTopupText(body) !== null;
+  // 去掉「補錢」前綴詞（後接空白／冒號／直接接內容皆可），剩下的就是補錢後面的內容。
+  const rest = body.replace(/^補錢[\s:：]*/, '').trim();
+  // 只打「#補錢」（後面空字串）→ 命中（走用法提示分支）。
+  if (!rest) return true;
+  // 補錢後第一個「詞」（連續非空白字元）若完全等於查詢詞 → 視為查詢句，不觸發。
+  const firstWord = rest.split(/[\s:：]+/)[0];
+  if (TOPUP_QUERY_WORDS.includes(firstWord)) return false;
+  // 其餘（含金額、負號、貨幣符號、品項備註後接金額…）一律命中，交 handler 統一處理。
+  return true;
 }
 
 // 判斷是不是 #餘額 查詢指令：必須「單獨打 #餘額」（後面只允許空白），避免「#餘額多少」「#餘額明細」誤觸。
@@ -1181,12 +1202,18 @@ function isMarutenBalanceTrigger(text) {
 }
 
 // --- 任務5：零用金確認卡片（補入）---
+// balance 傳 null／undefined／非有限數字 → 餘額欄顯示「暫時查詢失敗」，不放假數字（P1：補入成功但餘額查詢失敗時用）。
+// 注意：Number(null)===0、Number.isFinite(0)===true，故必須先排除 null/undefined，否則「查詢失敗」會被誤顯示成 NT$ 0。
 function buildPettyCashTopupFlex({ entity, amount, note, recorder, dateText, balance }) {
+  const balanceAvailable = balance !== null && balance !== undefined && Number.isFinite(Number(balance));
+  const balanceText = balanceAvailable ? `NT$ ${Number(balance).toLocaleString('zh-TW')}` : '暫時查詢失敗';
+  // 餘額為負 → 標示已超支（紅字提醒），避免使用者誤以為還有錢可花。
+  const balanceColor = balanceAvailable && Number(balance) < 0 ? CARD_THEME.danger : CARD_THEME.primaryDark;
   const rows = [
     ['主體', entity || '丸十'],
     ['類別', '零用金補入'],
     ['備註', note || '-'],
-    ['補入金額', `NT$ ${Number(amount).toLocaleString()}`],
+    ['補入金額', `NT$ ${Number(amount).toLocaleString('zh-TW')}`],
     ['記錄人', recorder || '-'],
     ['日期', dateText || ''],
   ];
@@ -1212,7 +1239,7 @@ function buildPettyCashTopupFlex({ entity, amount, note, recorder, dateText, bal
           },
           {
             type: 'text',
-            text: `+ NT$ ${Number(amount).toLocaleString()}`,
+            text: `+ NT$ ${Number(amount).toLocaleString('zh-TW')}`,
             size: 'xxl',
             weight: 'bold',
             color: CARD_THEME.success,
@@ -1240,9 +1267,13 @@ function buildPettyCashTopupFlex({ entity, amount, note, recorder, dateText, bal
             margin: 'lg',
             contents: [
               { type: 'text', text: '目前餘額', size: 'sm', color: CARD_THEME.muted, flex: 2 },
-              { type: 'text', text: `NT$ ${Number(balance).toLocaleString()}`, size: 'md', color: CARD_THEME.primaryDark, flex: 5, weight: 'bold', wrap: true },
+              { type: 'text', text: balanceText, size: 'md', color: balanceColor, flex: 5, weight: 'bold', wrap: true },
             ],
           },
+          // 餘額為負才顯示：醒目提醒已超支（餘額查詢失敗時不顯示，免得誤導）。
+          ...(balanceAvailable && Number(balance) < 0
+            ? [{ type: 'text', text: '⚠️ 已超支', size: 'sm', color: CARD_THEME.danger, weight: 'bold', margin: 'sm' }]
+            : []),
         ],
       },
     },
@@ -1251,9 +1282,10 @@ function buildPettyCashTopupFlex({ entity, amount, note, recorder, dateText, bal
 
 // --- 任務5：零用金餘額卡片（查詢）---
 function buildPettyCashBalanceFlex({ entity, deposit, expense, balance }) {
+  const overspent = Number(balance) < 0;   // 餘額為負 → 已超支，醒目提示
   const rows = [
-    ['累計補入', `NT$ ${Number(deposit).toLocaleString()}`],
-    ['累計支出', `NT$ ${Number(expense).toLocaleString()}`],
+    ['累計補入', `NT$ ${Number(deposit).toLocaleString('zh-TW')}`],
+    ['累計支出', `NT$ ${Number(expense).toLocaleString('zh-TW')}`],
   ];
   return {
     type: 'flex',
@@ -1277,12 +1309,16 @@ function buildPettyCashBalanceFlex({ entity, deposit, expense, balance }) {
           },
           {
             type: 'text',
-            text: `NT$ ${Number(balance).toLocaleString()}`,
+            text: `NT$ ${Number(balance).toLocaleString('zh-TW')}`,
             size: 'xxl',
             weight: 'bold',
-            color: CARD_THEME.primaryDark,
+            color: overspent ? CARD_THEME.danger : CARD_THEME.primaryDark,
             margin: 'sm',
           },
+          // 餘額為負才顯示：醒目提醒已超支。
+          ...(overspent
+            ? [{ type: 'text', text: '⚠️ 已超支', size: 'sm', color: CARD_THEME.danger, weight: 'bold', margin: 'xs' }]
+            : []),
           { type: 'separator', margin: 'lg', color: CARD_THEME.line },
           {
             type: 'box',
@@ -1333,7 +1369,8 @@ async function handleMarutenTopup(event, cleanedText, focusKey) {
     timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
   });
 
-  // 存 Supabase：type='deposit' 區分補入、account 歸 business、entity=該主體、類別固定「零用金補入」。
+  // 存 Supabase：type='deposit' 區分補入、account 歸 business、entity=該主體、類別固定「零用金補入」、
+  // recorder=記錄人（持久化「誰補的」，事後查得到 → 滿足需求「每筆補錢記下是誰補的」）。
   let saved;
   try {
     saved = await saveExpense({
@@ -1343,24 +1380,47 @@ async function handleMarutenTopup(event, cleanedText, focusKey) {
       type: 'deposit',
       account: 'business',
       entity,
+      recorder,
     });
   } catch (e) {
     console.error('maruten_topup_save_error', e?.message);
     return [{ type: 'text', text: `補錢失敗了（${e?.message || '資料庫錯誤'}），請稍後再試一次。` }];
   }
 
-  // 算入帳後的新餘額（即時 SUM，不依賴前一筆，並發天然正確）。失敗不影響已存的補入，餘額顯示退化為本次補入額。
-  let balanceInfo;
+  // 算入帳後的新餘額（即時 SUM，不依賴前一筆，並發天然正確）。
+  // 【P1 修正】餘額查詢失敗時**不捏造數字**：補入已成功寫進 DB，但此刻算不出真實餘額，
+  // 不可回退成 {deposit:本次補入額} 假餘額（既有餘額非 0 時一定誤導使用者）。
+  // 改成：誠實告知「已補入、但餘額暫時查詢失敗，請稍後打 #餘額 確認」，卡片餘額欄顯示「暫時查詢失敗」。
+  const amountText = Number(parsed.amount).toLocaleString('zh-TW');
+  let balanceInfo = null;
   try {
     balanceInfo = await getPettyCashBalance(entity);
   } catch (e) {
     console.error('maruten_topup_balance_error', e?.message);
-    balanceInfo = { deposit: parsed.amount, expense: 0, balance: parsed.amount };
+    balanceInfo = null;
   }
 
   void saved; // saved 目前不再被後續流程使用（補入不接「改分類／刪除」焦點），保留變數供除錯。
+
+  if (!balanceInfo) {
+    // 餘額查不到：回誠實訊息＋卡片（餘額欄不放假數字）。
+    return [
+      { type: 'text', text: `已補入 NT$${amountText}（${entity}｜記錄人 ${recorder}），但餘額暫時查詢失敗，請稍後打 #餘額 確認。` },
+      buildPettyCashTopupFlex({
+        entity,
+        amount: parsed.amount,
+        note: parsed.note,
+        recorder,
+        dateText,
+        balance: null,   // null → 卡片顯示「暫時查詢失敗」，不放假數字
+      }),
+    ];
+  }
+
+  const balanceText = Number(balanceInfo.balance).toLocaleString('zh-TW');
+  const overspent = balanceInfo.balance < 0 ? '（⚠️ 已超支）' : '';
   return [
-    { type: 'text', text: `已補入：${entity}｜零用金補入｜NT$${parsed.amount}｜${recorder}｜目前餘額 NT$${balanceInfo.balance}` },
+    { type: 'text', text: `已補入：${entity}｜零用金補入｜NT$${amountText}｜${recorder}｜目前餘額 NT$${balanceText}${overspent}` },
     buildPettyCashTopupFlex({
       entity,
       amount: parsed.amount,
@@ -1389,8 +1449,13 @@ async function handleMarutenBalance(event) {
     return [{ type: 'text', text: `查餘額失敗了（${e?.message || '資料庫錯誤'}），請稍後再試一次。` }];
   }
 
+  // 千分位（zh-TW）顯示；餘額為負加「⚠️ 已超支」醒目提示。
+  const balanceText = Number(info.balance).toLocaleString('zh-TW');
+  const depositText = Number(info.deposit).toLocaleString('zh-TW');
+  const expenseText = Number(info.expense).toLocaleString('zh-TW');
+  const overspent = info.balance < 0 ? '（⚠️ 已超支）' : '';
   return [
-    { type: 'text', text: `${entity}零用金餘額：NT$${info.balance}（累計補入 NT$${info.deposit}／累計支出 NT$${info.expense}）` },
+    { type: 'text', text: `${entity}零用金餘額：NT$${balanceText}${overspent}（累計補入 NT$${depositText}／累計支出 NT$${expenseText}）` },
     buildPettyCashBalanceFlex({ entity, deposit: info.deposit, expense: info.expense, balance: info.balance }),
   ];
 }
@@ -6018,5 +6083,8 @@ if (process.env.NODE_ENV === 'test') {
     handleMarutenBalance,
     buildPettyCashTopupFlex,
     buildPettyCashBalanceFlex,
+    // 共用記帳：saveExpense（驗 recorder 入庫）、getExpenses（驗 deposit 不污染既有查詢）
+    saveExpense,
+    getExpenses,
   };
 }
