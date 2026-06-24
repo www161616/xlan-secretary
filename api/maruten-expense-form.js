@@ -47,6 +47,23 @@ const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 // 寫死在程式（清單穩定、無需動態設定）；前端下拉與後端驗證共用同一份，避免兩邊不一致。
 const EXPENSE_CATEGORIES = ['餐飲', '進貨食材', '運費', '雜支', '水電', '其他'];
 
+// 卡片配色：與 webhook.js 的 CARD_THEME 風格需一致（淡黃主題，丸十支出卡片同款）。
+// ⚠️ 本檔是獨立 serverless function、拿不到 webhook.js 的 CARD_THEME，故在此放一份等價常數
+//    （比照本檔「getEntityForGroup／getPettyCashBalance 等價各一份」的慣例）。webhook.js 那份若改配色，這份要一起改。
+const CARD_THEME_FORM = {
+  page: '#FFFBEB',
+  panel: '#FFFFFF',
+  soft: '#FEF3C7',
+  line: '#FCD34D',
+  primary: '#F59E0B',
+  primaryDark: '#92400E',
+  text: '#1F2937',
+  muted: '#6B7280',
+  success: '#16A34A',
+  danger: '#DC2626',
+  info: '#2563EB',
+};
+
 const KV_GROUP_ENTITY_MAP = 'group_entity_map';   // 與 webhook.js 同一個 key
 const KV_REFRESH_TOKEN = 'google_refresh_token';   // 與 webhook.js / staff-report.js 共用同一把 token
 
@@ -290,10 +307,12 @@ function formatPettyCashBalanceText(balance) {
   return available ? `NT$ ${Number(balance).toLocaleString('zh-TW')}` : '－（暫無法顯示）';
 }
 
-// --- 純函數：組群組確認訊息文字（P1-1）---
-// 比照打字版確認風格（webhook.js handleMarutenExpense 的「已記帳：…」），含主體／分類／項目／金額／記錄人／日期／照片張數／目前餘額。
+// --- 純函數：組群組確認摘要文字（P1-1；現作為 flex 卡片的 altText 用）---
+// 比照打字版確認風格，含主體／分類／項目／金額／記錄人／日期／照片張數／目前餘額。
 // receiptFailed > 0 時附「部分照片上傳失敗 (N/M)」（P2-1）；sheetWarning 有值也帶進訊息，不靜默。
 // balance：記帳後該主體零用金餘額（查詢失敗傳 null → 顯示「－（暫無法顯示）」，記帳已完成，不受影響）。
+// 註：群組確認本身已改推 flex 卡片（buildFormExpenseFlex），這串純文字保留作為 flex 的 altText
+//     （通知列／不支援 flex 的環境會顯示它），欄位口徑與卡片一致。
 function buildExpenseConfirmText({ entity, category, note, amount, recorder, dateText, receiptCount, receiptFailed, sheetWarning, balance }) {
   const amountText = Number.isFinite(Number(amount)) ? Number(amount).toLocaleString() : String(amount);
   const total = (Number(receiptCount) || 0) + (Number(receiptFailed) || 0);
@@ -316,11 +335,137 @@ function buildExpenseConfirmText({ entity, category, note, amount, recorder, dat
   return lines.join('\n');
 }
 
+// --- 純函數：組表單版群組確認 flex 卡片（P1-1；老闆指定要卡片不要純文字）---
+// 風格需與 webhook.js buildMarutenExpenseFlex 一致：同樣的 kilo bubble、標題「<主體>・支出」、大字金額、
+// 分隔線、欄位列、CARD_THEME_FORM 配色、「目前餘額」列（負餘額紅字標已超支）。
+// 表單版特有欄位：收據照片張數（部分上傳失敗時於該列附「部分上傳失敗 N/M」）。
+// 與打字版差異：表單版是 push（無 replyToken），故不放「改分類／刪除」這類需要按鈕回呼的 footer，
+//             改在底部以小字提示「直接打 #支出 也可以調整」；視覺主體（標題/金額/欄位/餘額）與打字版維持一致。
+// balance：記帳後該主體零用金餘額（查詢失敗傳 null → 餘額列顯示「－（暫無法顯示）」，記帳已完成、不受影響）。
+// 回傳完整 LINE 訊息物件 { type:'flex', altText, contents }；altText 用既有摘要（buildExpenseConfirmText）。
+function buildFormExpenseFlex({ entity, category, note, amount, recorder, dateText, receiptCount, receiptFailed, sheetWarning, balance }) {
+  const T = CARD_THEME_FORM;
+  const amountText = `NT$ ${Number.isFinite(Number(amount)) ? Number(amount).toLocaleString() : String(amount)}`;
+  const balanceAvailable = balance !== null && balance !== undefined && Number.isFinite(Number(balance));
+  const balanceText = formatPettyCashBalanceText(balance);
+  // 餘額為負 → 紅字提醒已超支（查詢失敗時用一般色，免得把「暫無法顯示」誤標成超支）。
+  const balanceColor = balanceAvailable && Number(balance) < 0 ? T.danger : T.primaryDark;
+
+  // 收據照片張數列文字：成功張數為主，有失敗時附「部分上傳失敗 N/M」（P2-1：失敗要可見）。
+  const okCount = Number(receiptCount) || 0;
+  const failCount = Number(receiptFailed) || 0;
+  const totalCount = okCount + failCount;
+  let receiptText = `${okCount} 張`;
+  if (failCount > 0) receiptText += `（部分上傳失敗 ${failCount}/${totalCount}）`;
+
+  // 欄位列（比照打字版 rows）：主體／分類／項目／金額／記錄人／日期／收據照片（表單版特有）。
+  const rows = [
+    ['主體', entity || '丸十'],
+    ['分類', category || '其他'],
+    ['項目', note || '-'],
+    ['金額', amountText],
+    ['記錄人', recorder || '-'],
+    ['日期', dateText || ''],
+    ['收據照片', receiptText],
+  ];
+
+  // altText：沿用既有純文字摘要（通知列／不支援 flex 時顯示）。
+  const altText = buildExpenseConfirmText({ entity, category, note, amount, recorder, dateText, receiptCount, receiptFailed, sheetWarning, balance });
+
+  return {
+    type: 'flex',
+    altText,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: T.page,
+        paddingAll: '20px',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'text',
+            text: `${entity || '丸十'}・支出`,
+            size: 'sm',
+            color: T.primary,
+            weight: 'bold',
+          },
+          {
+            type: 'text',
+            text: amountText,
+            size: 'xxl',
+            weight: 'bold',
+            color: T.primaryDark,
+            margin: 'sm',
+          },
+          { type: 'separator', margin: 'lg', color: T.line },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'lg',
+            spacing: 'sm',
+            contents: rows.map(([k, v]) => ({
+              type: 'box',
+              layout: 'horizontal',
+              contents: [
+                { type: 'text', text: k, size: 'sm', color: T.muted, flex: 2 },
+                { type: 'text', text: String(v), size: 'sm', color: T.text, flex: 5, weight: 'bold', wrap: true },
+              ],
+            })),
+          },
+          { type: 'separator', margin: 'lg', color: T.line },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            margin: 'lg',
+            contents: [
+              { type: 'text', text: '目前餘額', size: 'sm', color: T.muted, flex: 2 },
+              { type: 'text', text: balanceText, size: 'md', color: balanceColor, flex: 5, weight: 'bold', wrap: true },
+            ],
+          },
+          // 餘額為負才顯示：醒目提醒已超支（餘額查詢失敗時不顯示，免得誤導）。
+          ...(balanceAvailable && Number(balance) < 0
+            ? [{ type: 'text', text: '⚠️ 已超支', size: 'sm', color: T.danger, weight: 'bold', margin: 'sm' }]
+            : []),
+          // sheetWarning 有值 → 不靜默，於卡片底部紅字帶出（與打字版一致）；否則顯示「已寫入支出表」綠字。
+          ...(sheetWarning ? [{
+            type: 'text',
+            text: sheetWarning,
+            size: 'xxs',
+            color: T.danger,
+            margin: 'md',
+            wrap: true,
+          }] : [{
+            type: 'text',
+            text: '✓ 已記錄並寫入丸十支出表（表單）',
+            size: 'xs',
+            color: T.success,
+            align: 'end',
+            margin: 'lg',
+          }]),
+          // 表單版以小字提示可改用打字版調整（push 無按鈕回呼，不放假按鈕）。
+          {
+            type: 'text',
+            text: '要改分類或刪這筆？直接打「#支出」也可以。',
+            size: 'xxs',
+            color: T.muted,
+            margin: 'md',
+            wrap: true,
+          },
+        ],
+      },
+    },
+  };
+}
+
 // --- 表單送出成功後 push 確認訊息回群組（P1-1）---
 // 用 LINE Messaging API push 到 groupId（沿用 reminder.js pushMessage 模式；本端點無 replyToken，只能 push）。
+// message：完整 LINE 訊息物件（現為 buildFormExpenseFlex 回的 flex 卡片；亦可傳純文字物件）。
 // 缺 token／缺 groupId／push 失敗都不擋記帳（記帳已完成），回傳 false 讓 handler 附 warning，但不靜默。
-async function pushExpenseConfirm(groupId, text) {
-  if (!groupId || !LINE_CHANNEL_ACCESS_TOKEN) return false;
+async function pushExpenseConfirm(groupId, message) {
+  if (!groupId || !LINE_CHANNEL_ACCESS_TOKEN || !message) return false;
   try {
     const res = await fetch('https://api.line.me/v2/bot/message/push', {
       method: 'POST',
@@ -328,7 +473,7 @@ async function pushExpenseConfirm(groupId, text) {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}`,
       },
-      body: JSON.stringify({ to: groupId, messages: [{ type: 'text', text }] }),
+      body: JSON.stringify({ to: groupId, messages: [message] }),
     });
     if (!res.ok) {
       const err = await res.text().catch(() => '');
@@ -507,13 +652,14 @@ module.exports = async (req, res) => {
       balance = null;
     }
 
-    // 6. push 確認訊息回群組（P1-1：驗收要「送出 → 群組回確認」）。
+    // 6. push 確認「卡片」回群組（P1-1：驗收要「送出 → 群組回確認」；老闆指定要 flex 卡片不要純文字）。
+    //    比照打字版 #支出 的丸十支出卡片風格（buildFormExpenseFlex，含收據張數＋目前餘額）。
     //    push 失敗不影響已完成的記帳，但要在回應附 warning（不靜默）。
-    const confirmText = buildExpenseConfirmText({
+    const confirmFlex = buildFormExpenseFlex({
       entity, category, note, amount, recorder, dateText,
       receiptCount: receiptUrls.length, receiptFailed, sheetWarning, balance,
     });
-    const pushed = await pushExpenseConfirm(groupId, confirmText);
+    const pushed = await pushExpenseConfirm(groupId, confirmFlex);
     let pushWarning = '';
     if (!pushed) {
       pushWarning = !LINE_CHANNEL_ACCESS_TOKEN
@@ -554,6 +700,7 @@ if (process.env.NODE_ENV === 'test') {
     validateExpenseForm,
     validateReceiptPhotos,
     buildExpenseConfirmText,
+    buildFormExpenseFlex,
     formatPettyCashBalanceText,
     getPettyCashBalance,
     pushExpenseConfirm,

@@ -28,13 +28,27 @@ function loadForm() {
 }
 const { __test__ } = loadForm();
 const {
-  validateReceiptPhotos, buildExpenseConfirmText, pushExpenseConfirm,
+  validateReceiptPhotos, buildExpenseConfirmText, buildFormExpenseFlex, pushExpenseConfirm,
   uploadReceiptList, base64DecodedBytes,
   MAX_RECEIPT_DATAURL_CHARS, MAX_RECEIPT_DECODED_BYTES, MAX_RECEIPT_TOTAL_DECODED_BYTES,
 } = __test__;
 
 // 1px 合法 jpeg base64（夠短、格式正確），用來組各種 data URL。
 const JPEG_1PX = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+
+// --- flex 卡片測試輔助：把 bubble 裡所有 text node 的文字攤平成一個陣列，方便比對欄位／餘額是否在卡片上。---
+function flexTexts(flexMessage) {
+  const out = [];
+  (function walk(node) {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (node.type === 'text' && typeof node.text === 'string') out.push(node.text);
+    if (node.contents) walk(node.contents);
+    if (node.body) walk(node.body);
+    if (node.footer) walk(node.footer);
+  })(flexMessage.contents || flexMessage);
+  return out;
+}
 
 // ========================== P1-2：照片大小／格式驗證 ==========================
 test('P1-2：正常 jpeg data URL → 通過', () => {
@@ -178,6 +192,86 @@ test('P1-1：sheetWarning 有值 → 帶進確認文字（不靜默）', () => {
     sheetWarning: '已記到資料庫，但同步支出表失敗（稍後可補）。',
   });
   assert.match(txt, /同步支出表失敗/);
+});
+
+// ========================== 群組確認改 flex 卡片（老闆指定：要卡片不要純文字）==========================
+// 比照打字版 webhook.js buildMarutenExpenseFlex：群組確認＝flex 訊息，結構含
+// 主體／分類／項目／金額／記錄人／日期／收據照片張數／目前餘額，altText 為既有摘要文字。
+test('flex：群組確認＝flex 訊息（type:flex、bubble、altText 為摘要）', () => {
+  const card = buildFormExpenseFlex({
+    entity: '丸十', category: '餐飲', note: '員工便當', amount: 1234,
+    recorder: '小明', dateText: '2026/06/24 12:00', receiptCount: 2, receiptFailed: 0, balance: 9880,
+  });
+  assert.equal(card.type, 'flex', '群組確認應為 flex 訊息（非純文字）');
+  assert.equal(card.contents.type, 'bubble', 'flex 內容應為 bubble');
+  assert.match(card.altText, /員工便當/, 'altText 應為含項目的摘要文字（通知列／不支援 flex 時顯示）');
+  assert.match(card.altText, /目前餘額/, 'altText 摘要也應含目前餘額');
+});
+
+test('flex：卡片結構含主體/分類/項目/金額/記錄人/日期/收據張數/目前餘額', () => {
+  const card = buildFormExpenseFlex({
+    entity: '丸十', category: '餐飲', note: '員工便當', amount: 1234,
+    recorder: '小明', dateText: '2026/06/24 12:00', receiptCount: 2, receiptFailed: 0, balance: 9880,
+  });
+  const texts = flexTexts(card);
+  const joined = texts.join('｜');
+  // 標題（主體・支出）＋大字金額
+  assert.ok(texts.includes('丸十・支出'), '應有「<主體>・支出」標題');
+  assert.ok(texts.includes('NT$ 1,234'), '應有大字金額（千分位）');
+  // 欄位標籤齊全
+  for (const label of ['主體', '分類', '項目', '金額', '記錄人', '日期', '收據照片', '目前餘額']) {
+    assert.ok(texts.includes(label), `卡片應含欄位「${label}」，實際：${joined}`);
+  }
+  // 欄位值
+  assert.ok(texts.includes('餐飲'), '分類值');
+  assert.ok(texts.includes('員工便當'), '項目值');
+  assert.ok(texts.includes('小明'), '記錄人值');
+  assert.ok(texts.includes('2026/06/24 12:00'), '日期值');
+  assert.ok(texts.some((t) => /2 張/.test(t)), '收據照片張數（2 張）');
+  assert.ok(texts.includes('NT$ 9,880'), '目前餘額值（千分位）');
+});
+
+test('flex：收據部分上傳失敗 → 收據列附「部分上傳失敗 N/M」（P2-1 可見）', () => {
+  const card = buildFormExpenseFlex({
+    entity: '丸十', category: '雜支', note: '雜物', amount: 50,
+    recorder: '小華', dateText: '2026/06/24', receiptCount: 2, receiptFailed: 2, balance: 100,
+  });
+  const joined = flexTexts(card).join('｜');
+  assert.match(joined, /部分上傳失敗 2\/4/, '失敗張數要在卡片上看得到（成功2+失敗2=4）');
+});
+
+test('flex graceful：餘額查詢失敗（balance=null）→ 餘額列顯示「－（暫無法顯示）」、不放假數字、卡片照樣產出', () => {
+  const card = buildFormExpenseFlex({
+    entity: '丸十', category: '餐飲', note: '便當', amount: 120,
+    recorder: '小明', dateText: '2026/06/24', receiptCount: 0, receiptFailed: 0, balance: null,
+  });
+  assert.equal(card.type, 'flex', '餘額查詢失敗也照樣產出卡片（graceful，不擋）');
+  const texts = flexTexts(card);
+  assert.ok(texts.includes('－（暫無法顯示）'), '餘額列退化成 fallback 文案');
+  assert.ok(!texts.some((t) => /目前餘額/.test(t) && /NT\$/.test(t)), '不可在餘額處放任何 NT$ 假數字');
+  assert.ok(!texts.includes('⚠️ 已超支'), '查詢失敗不可誤標已超支');
+});
+
+test('flex：餘額為負 → 顯示「⚠️ 已超支」', () => {
+  const card = buildFormExpenseFlex({
+    entity: '丸十', category: '雜支', note: '大採購', amount: 500,
+    recorder: '小明', dateText: '2026/06/24', receiptCount: 0, receiptFailed: 0, balance: -150,
+  });
+  const texts = flexTexts(card);
+  assert.ok(texts.includes('NT$ -150'), '負餘額顯示負值');
+  assert.ok(texts.includes('⚠️ 已超支'), '負餘額標已超支');
+});
+
+test('flex：配色比照 webhook CARD_THEME（淡黃主題：page #FFFBEB、primaryDark #92400E）', () => {
+  const card = buildFormExpenseFlex({
+    entity: '丸十', category: '餐飲', note: '便當', amount: 120,
+    recorder: '小明', dateText: '2026/06/24', receiptCount: 0, receiptFailed: 0, balance: 9880,
+  });
+  assert.equal(card.contents.body.backgroundColor, '#FFFBEB', 'body 底色應與打字版卡片一致');
+  // 大字金額用 primaryDark（與 buildMarutenExpenseFlex 同色），確保視覺一致。
+  const amountNode = card.contents.body.contents.find((c) => c.type === 'text' && c.size === 'xxl');
+  assert.ok(amountNode, '應有大字金額節點');
+  assert.equal(amountNode.color, '#92400E', '大字金額色應與打字版一致（primaryDark）');
 });
 
 // ========================== 任務3：表單版顯示餘額 ==========================
@@ -324,14 +418,18 @@ test('P1-1：pushExpenseConfirm 會 push 到 groupId（fetch 帶正確 to／mess
     calls.push({ url, opt });
     return { ok: true, status: 200, async text() { return ''; } };
   };
+  // 現在 push 的是完整 flex 訊息物件（非純文字），驗證它被原封不動放進 messages[0]。
+  const flexMsg = { type: 'flex', altText: '確認摘要', contents: { type: 'bubble' } };
   try {
-    const ok = await t.pushExpenseConfirm('G-123', '確認訊息內容');
+    const ok = await t.pushExpenseConfirm('G-123', flexMsg);
     assert.equal(ok, true);
     assert.equal(calls.length, 1, '應呼叫一次 LINE push API');
     assert.match(calls[0].url, /api\.line\.me\/v2\/bot\/message\/push/);
     const body = JSON.parse(calls[0].opt.body);
     assert.equal(body.to, 'G-123', 'push 目標應為 groupId');
-    assert.equal(body.messages[0].text, '確認訊息內容');
+    assert.equal(body.messages[0].type, 'flex', 'push 的應是 flex 訊息（非純文字）');
+    assert.equal(body.messages[0].altText, '確認摘要', 'altText 應原樣帶上');
+    assert.deepEqual(body.messages[0], flexMsg, '應把完整 flex 訊息物件放進 messages[0]');
     assert.match(calls[0].opt.headers.Authorization, /Bearer test-token/);
   } finally {
     global.fetch = prevFetch;
@@ -345,7 +443,7 @@ test('P1-1：缺 groupId → 不 push（回 false，不呼叫 fetch）', async (
   let called = false;
   global.fetch = async () => { called = true; return { ok: true, status: 200, async text() { return ''; } }; };
   try {
-    const ok = await pushExpenseConfirm('', '內容');
+    const ok = await pushExpenseConfirm('', { type: 'flex', altText: '內容', contents: { type: 'bubble' } });
     assert.equal(ok, false);
     assert.equal(called, false, '缺 groupId 不應呼叫 fetch');
   } finally {
@@ -360,7 +458,7 @@ test('P1-1：push 失敗（LINE 回非 2xx）→ 回 false（讓 handler 附 war
   const { __test__: t } = loadForm();
   global.fetch = async () => ({ ok: false, status: 400, async text() { return 'bad'; } });
   try {
-    const ok = await t.pushExpenseConfirm('G-123', '內容');
+    const ok = await t.pushExpenseConfirm('G-123', { type: 'flex', altText: '內容', contents: { type: 'bubble' } });
     assert.equal(ok, false);
   } finally {
     global.fetch = prevFetch;
@@ -625,10 +723,10 @@ function makeHandlerBalanceSupabase(seed = {}) {
   return { inserts, client: { from } };
 }
 
-test('任務3 handler：POST 成功 → 回應帶 balance、群組確認文字含「目前餘額」', async () => {
+test('任務3 handler：POST 成功 → 回應帶 balance、群組確認＝flex 卡片且含主體/項目/金額/目前餘額', async () => {
   const prevToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
   const prevFetch = global.fetch;
-  process.env.LINE_CHANNEL_ACCESS_TOKEN = 'test-token';   // 設了 token 才會 push（才驗得到群組文字）
+  process.env.LINE_CHANNEL_ACCESS_TOKEN = 'test-token';   // 設了 token 才會 push（才驗得到群組卡片）
 
   const sb = makeHandlerBalanceSupabase({
     expenses: [{ id: 'dep', entity: '丸十', type: 'deposit', amount: 10000 }], // 既有補入，記帳後餘額=10000-120=9880
@@ -637,11 +735,11 @@ test('任務3 handler：POST 成功 → 回應帶 balance、群組確認文字�
   const fakeMaruten = makeFakeMarutenMod();
   stubs.setFakeMarutenModule(fakeMaruten.mod);
 
-  // 攔 push：抓送到群組的訊息 text，驗它含餘額。
-  let pushedText = '';
+  // 攔 push：抓送到群組的整則訊息（現為 flex 卡片），驗它是 flex 且卡片上有餘額等欄位。
+  let pushedMsg = null;
   global.fetch = async (url, init) => {
     if (String(url).includes('/v2/bot/message/push')) {
-      try { pushedText = JSON.parse(init.body).messages[0].text; } catch {}
+      try { pushedMsg = JSON.parse(init.body).messages[0]; } catch {}
       return { ok: true, status: 200, async json() { return {}; }, async text() { return ''; } };
     }
     return { ok: true, status: 200, async json() { return {}; }, async text() { return ''; } };
@@ -659,14 +757,21 @@ test('任務3 handler：POST 成功 → 回應帶 balance、群組確認文字�
     assert.equal(res.body.ok, true);
     assert.equal(sb.inserts.length, 1, '應記一筆支出');
     assert.equal(res.body.balance, 9880, '回應 balance 應為記帳後餘額 9,880（前端完成頁用）');
-    assert.match(pushedText, /目前餘額：NT\$ 9,880/, '群組確認文字應含目前餘額');
+    // 群組確認改推 flex 卡片（老闆指定）：驗 type=flex、卡片含主體/項目/金額/目前餘額。
+    assert.ok(pushedMsg, '應有 push 訊息');
+    assert.equal(pushedMsg.type, 'flex', '群組確認應推 flex 卡片（非純文字）');
+    const texts = flexTexts(pushedMsg);
+    assert.ok(texts.includes('丸十・支出'), '卡片應有「丸十・支出」標題');
+    assert.ok(texts.includes('便當'), '卡片應含項目');
+    assert.ok(texts.includes('NT$ 120'), '卡片應含金額');
+    assert.ok(texts.includes('目前餘額') && texts.includes('NT$ 9,880'), '卡片應含目前餘額（千分位）');
   } finally {
     global.fetch = prevFetch;
     if (prevToken === undefined) delete process.env.LINE_CHANNEL_ACCESS_TOKEN; else process.env.LINE_CHANNEL_ACCESS_TOKEN = prevToken;
   }
 });
 
-test('任務3 handler graceful：餘額查詢失敗 → 仍記帳成功、回應 balance=null、群組文字 fallback、不擋（200）', async () => {
+test('任務3 handler graceful：餘額查詢失敗 → 仍記帳成功、回應 balance=null、群組仍推 flex 卡片（餘額 fallback）、不擋（200）', async () => {
   const prevToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
   const prevFetch = global.fetch;
   process.env.LINE_CHANNEL_ACCESS_TOKEN = 'test-token';
@@ -679,10 +784,10 @@ test('任務3 handler graceful：餘額查詢失敗 → 仍記帳成功、回應
   const fakeMaruten = makeFakeMarutenMod();
   stubs.setFakeMarutenModule(fakeMaruten.mod);
 
-  let pushedText = '';
+  let pushedMsg = null;
   global.fetch = async (url, init) => {
     if (String(url).includes('/v2/bot/message/push')) {
-      try { pushedText = JSON.parse(init.body).messages[0].text; } catch {}
+      try { pushedMsg = JSON.parse(init.body).messages[0]; } catch {}
       return { ok: true, status: 200, async json() { return {}; }, async text() { return ''; } };
     }
     return { ok: true, status: 200, async json() { return {}; }, async text() { return ''; } };
@@ -701,7 +806,12 @@ test('任務3 handler graceful：餘額查詢失敗 → 仍記帳成功、回應
     assert.equal(res.body.ok, true);
     assert.equal(sb.inserts.length, 1, '記帳必須成功寫入');
     assert.equal(res.body.balance, null, '查不到餘額 → 回應 balance=null（前端顯示 fallback，不放假數字）');
-    assert.match(pushedText, /目前餘額：－（暫無法顯示）/, '群組文字餘額應退化成 fallback');
+    // graceful：餘額失敗也照樣推 flex 卡片，餘額列退化成 fallback、不放假數字。
+    assert.ok(pushedMsg, '餘額查詢失敗也必須照樣 push（不可因此不送）');
+    assert.equal(pushedMsg.type, 'flex', '仍推 flex 卡片');
+    const texts = flexTexts(pushedMsg);
+    assert.ok(texts.includes('－（暫無法顯示）'), '卡片餘額列應退化成 fallback');
+    assert.ok(!texts.some((t) => /目前餘額/.test(t) && /NT\$/.test(t)), '查詢失敗時卡片不可出現 NT$ 假餘額');
   } finally {
     global.fetch = prevFetch;
     if (prevToken === undefined) delete process.env.LINE_CHANNEL_ACCESS_TOKEN; else process.env.LINE_CHANNEL_ACCESS_TOKEN = prevToken;
