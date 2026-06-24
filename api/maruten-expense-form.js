@@ -140,6 +140,35 @@ async function saveExpense({ amount, category, note, entity }) {
   return data[0];
 }
 
+// --- 零用金餘額計算（與 webhook.js getPettyCashBalance 嚴格等價）---
+// ⚠️ 兩處邏輯需一致：本檔是獨立 serverless function、拿不到 webhook.js 的 getPettyCashBalance，
+//    故在此放一份等價實作（同 entity 過濾、同 type='deposit'/'expense' 加總、同 deleted 排除、
+//    同 select 欄位 'amount, type, entity, deleted'）。webhook.js 那份若改算法／欄位，這份要一起改。
+// 回傳 { deposit, expense, balance }；entity 為空回全 0。查詢有 error 時 throw（呼叫端負責 try/catch graceful）。
+// entity 過濾在 DB（.eq）與 JS（row.entity!==entity）兩層都做，與 webhook.js 一致，確保不混 null／別主體。
+async function getPettyCashBalance(entity) {
+  const empty = { deposit: 0, expense: 0, balance: 0 };
+  if (!entity || !supabase) return empty;
+  const { data, error } = await supabase
+    .from('xlan_expenses')
+    .select('amount, type, entity, deleted')
+    .eq('entity', entity);
+  if (error) throw new Error(error.message);
+  let deposit = 0;
+  let expense = 0;
+  for (const row of data || []) {
+    if (!row) continue;
+    if (row.entity !== entity) continue;        // 第二層 entity 防護：絕不混 null／別主體
+    if (row.deleted === true) continue;          // 已刪不算（防禦；與 webhook.js 一致）
+    const amt = Number(row.amount);
+    if (!Number.isFinite(amt)) continue;
+    if (row.type === 'deposit') deposit += amt;
+    else if (row.type === 'expense') expense += amt;
+    // 其他 type（income 等）不計入零用金池子
+  }
+  return { deposit, expense, balance: deposit - expense };
+}
+
 // 把記帳對應的 Sheet 列號寫回 xlan_expenses（供日後改分類／刪除同步該列）。
 // 失敗只記 log、不拋錯（與 webhook.js setExpenseSheetRow 同；Sheet 同步是加值功能，不能影響主流程）。
 async function setExpenseSheetRow(expenseId, sheetRow) {
@@ -252,14 +281,27 @@ function validateReceiptPhotos(raw) {
   return { ok: true, photos: list };
 }
 
+// 「目前餘額」顯示文字（與 webhook.js formatPettyCashBalanceText 同口徑與 fallback 文案）。
+//   balance 為有限數字 → 「NT$X」（千分位、zh-TW）；null/undefined/非有限數字（查詢失敗）→ 「－（暫無法顯示）」。
+// ⚠️ 文案需與 webhook.js／maruten-expense.html 三處一致（「目前餘額」「－（暫無法顯示）」）。
+// 注意：Number(null)===0 且 Number.isFinite(0)===true，故先排除 null/undefined，否則查詢失敗會被誤顯示成 NT$ 0。
+function formatPettyCashBalanceText(balance) {
+  const available = balance !== null && balance !== undefined && Number.isFinite(Number(balance));
+  return available ? `NT$ ${Number(balance).toLocaleString('zh-TW')}` : '－（暫無法顯示）';
+}
+
 // --- 純函數：組群組確認訊息文字（P1-1）---
-// 比照打字版確認風格（webhook.js handleMarutenExpense 的「已記帳：…」），含主體／分類／項目／金額／記錄人／日期／照片張數。
+// 比照打字版確認風格（webhook.js handleMarutenExpense 的「已記帳：…」），含主體／分類／項目／金額／記錄人／日期／照片張數／目前餘額。
 // receiptFailed > 0 時附「部分照片上傳失敗 (N/M)」（P2-1）；sheetWarning 有值也帶進訊息，不靜默。
-function buildExpenseConfirmText({ entity, category, note, amount, recorder, dateText, receiptCount, receiptFailed, sheetWarning }) {
+// balance：記帳後該主體零用金餘額（查詢失敗傳 null → 顯示「－（暫無法顯示）」，記帳已完成，不受影響）。
+function buildExpenseConfirmText({ entity, category, note, amount, recorder, dateText, receiptCount, receiptFailed, sheetWarning, balance }) {
   const amountText = Number.isFinite(Number(amount)) ? Number(amount).toLocaleString() : String(amount);
   const total = (Number(receiptCount) || 0) + (Number(receiptFailed) || 0);
   let photoLine = `📎 收據照片：${Number(receiptCount) || 0} 張`;
   if (Number(receiptFailed) > 0) photoLine += `（部分上傳失敗 ${receiptFailed}/${total}，稍後可補）`;
+  const balanceAvailable = balance !== null && balance !== undefined && Number.isFinite(Number(balance));
+  let balanceLine = `💰 目前餘額：${formatPettyCashBalanceText(balance)}`;
+  if (balanceAvailable && Number(balance) < 0) balanceLine += '（⚠️ 已超支）';
   const lines = [
     `✅ 已記帳（表單）：${entity}`,
     `・分類：${category}`,
@@ -268,6 +310,7 @@ function buildExpenseConfirmText({ entity, category, note, amount, recorder, dat
     `・記錄人：${recorder || '-'}`,
     `・日期：${dateText || ''}`,
     photoLine,
+    balanceLine,
   ];
   if (sheetWarning) lines.push(`⚠️ ${sheetWarning}`);
   return lines.join('\n');
@@ -452,11 +495,23 @@ module.exports = async (req, res) => {
       sheetWarning = '已記到資料庫，但同步支出表失敗（稍後可補）。';
     }
 
+    // 5.5 算記帳後該主體零用金餘額（顯示在群組確認卡片與完成頁）。
+    //     graceful（最高原則，吸取上次 deleted 欄事件）：餘額查詢失敗 → balance=null，
+    //     記帳已完成、完全不受影響，卡片／完成頁餘額顯示「－（暫無法顯示）」，絕不讓「算餘額」變成記帳失敗的新原因。
+    let balance = null;
+    try {
+      const info = await getPettyCashBalance(entity);
+      balance = info ? info.balance : null;
+    } catch (e) {
+      console.error('maruten_form_balance_error', e?.message);
+      balance = null;
+    }
+
     // 6. push 確認訊息回群組（P1-1：驗收要「送出 → 群組回確認」）。
     //    push 失敗不影響已完成的記帳，但要在回應附 warning（不靜默）。
     const confirmText = buildExpenseConfirmText({
       entity, category, note, amount, recorder, dateText,
-      receiptCount: receiptUrls.length, receiptFailed, sheetWarning,
+      receiptCount: receiptUrls.length, receiptFailed, sheetWarning, balance,
     });
     const pushed = await pushExpenseConfirm(groupId, confirmText);
     let pushWarning = '';
@@ -477,6 +532,7 @@ module.exports = async (req, res) => {
       dateText,
       receiptCount: receiptUrls.length,
       receiptFailedCount: receiptFailed,   // P2-1：部分照片上傳失敗張數（完成頁據此顯示）
+      balance,                              // 記帳後零用金餘額（完成頁顯示；查詢失敗為 null → 顯示「－（暫無法顯示）」）
       pushed,                               // 群組確認是否已送達（debug／前端可選用）
       sheetWarning: [sheetWarning, pushWarning].filter(Boolean).join(' '),
     });
@@ -498,6 +554,8 @@ if (process.env.NODE_ENV === 'test') {
     validateExpenseForm,
     validateReceiptPhotos,
     buildExpenseConfirmText,
+    formatPettyCashBalanceText,
+    getPettyCashBalance,
     pushExpenseConfirm,
     uploadReceiptList,
     base64DecodedBytes,

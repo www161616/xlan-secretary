@@ -169,3 +169,10 @@ ALTER TABLE xlan_expenses ADD COLUMN IF NOT EXISTS sheet_row integer;
 -- 零用金餘額 ＝ 補入合計(type='deposit') − 支出合計(type='expense')，皆限同一 entity（如 '丸十'）。
 -- recorder：記帳／補錢的記錄人 LINE 顯示名，供事後查核「是誰補的／記的」。目前僅 #補錢 會寫入，既有記帳維持 null。
 ALTER TABLE xlan_expenses ADD COLUMN IF NOT EXISTS recorder text;
+
+-- deleted：軟刪防禦欄。丸十支出的刪除為「硬刪 row」（deleteExpense 走 DB .delete()），此情境下本欄恆為 false；
+-- 但 getExpenses 與 getPettyCashBalance 的查詢都會引用它（.not('deleted','is',true) / 加總時排除 deleted===true）
+-- 作為防禦（萬一未來改 soft delete、或回滾殘留半標記），故 DB 必須有此欄，否則 PostgREST 會回
+-- 「column xlan_expenses.deleted does not exist」導致查詢失敗（曾因缺此欄上線爆掉，已於生產 DB 手動補上）。
+-- 這行讓 schema 文件與生產一致，未來重建 DB 不缺欄。
+ALTER TABLE xlan_expenses ADD COLUMN IF NOT EXISTS deleted boolean DEFAULT false;

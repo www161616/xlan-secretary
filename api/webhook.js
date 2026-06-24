@@ -852,8 +852,25 @@ function isMarutenExpenseTrigger(text) {
   return parseMarutenExpenseText(body) !== null;
 }
 
-// --- 任務7：丸十支出確認卡片（明確顯示 主體｜分類｜項目｜金額｜記錄人｜日期）---
-function buildMarutenExpenseFlex({ entity, category, note, amount, recorder, dateText, sheetWarning }) {
+// 「目前餘額」顯示文字（三處支出卡片共用同一口徑與 fallback 文案）。
+//   balance 為有限數字 → 「NT$X」（千分位、zh-TW）；
+//   null/undefined/非有限數字（餘額查詢失敗）→ 「－（暫無法顯示）」。
+// 餘額查詢失敗時故意給「暫無法顯示」而非假數字：吸取上次 deleted 欄事件教訓——
+// 餘額是加值資訊，絕不能讓「顯示餘額」變成記帳失敗的新原因（記帳已成功，餘額只是退化顯示）。
+// 注意：Number(null)===0 且 Number.isFinite(0)===true，故必須先排除 null/undefined，否則查詢失敗會被誤顯示成 NT$ 0。
+function formatPettyCashBalanceText(balance) {
+  const available = balance !== null && balance !== undefined && Number.isFinite(Number(balance));
+  return available ? `NT$ ${Number(balance).toLocaleString('zh-TW')}` : '－（暫無法顯示）';
+}
+
+// --- 任務7：丸十支出確認卡片（明確顯示 主體｜分類｜項目｜金額｜記錄人｜日期｜目前餘額）---
+// balance：記帳後該主體零用金餘額（getPettyCashBalance().balance）。查詢失敗傳 null → 餘額行顯示「－（暫無法顯示）」，
+//          記帳本身不受影響（graceful：餘額是加值，不可擋記帳）。
+function buildMarutenExpenseFlex({ entity, category, note, amount, recorder, dateText, sheetWarning, balance }) {
+  const balanceAvailable = balance !== null && balance !== undefined && Number.isFinite(Number(balance));
+  const balanceText = formatPettyCashBalanceText(balance);
+  // 餘額為負 → 紅字提醒已超支（查詢失敗時用一般色，免得把「暫無法顯示」誤標成超支）。
+  const balanceColor = balanceAvailable && Number(balance) < 0 ? CARD_THEME.danger : CARD_THEME.primaryDark;
   const rows = [
     ['主體', entity || '丸十'],
     ['分類', category || '其他'],
@@ -905,6 +922,20 @@ function buildMarutenExpenseFlex({ entity, category, note, amount, recorder, dat
               ],
             })),
           },
+          { type: 'separator', margin: 'lg', color: CARD_THEME.line },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            margin: 'lg',
+            contents: [
+              { type: 'text', text: '目前餘額', size: 'sm', color: CARD_THEME.muted, flex: 2 },
+              { type: 'text', text: balanceText, size: 'md', color: balanceColor, flex: 5, weight: 'bold', wrap: true },
+            ],
+          },
+          // 餘額為負才顯示：醒目提醒已超支（餘額查詢失敗時不顯示，免得誤導）。
+          ...(balanceAvailable && Number(balance) < 0
+            ? [{ type: 'text', text: '⚠️ 已超支', size: 'sm', color: CARD_THEME.danger, weight: 'bold', margin: 'sm' }]
+            : []),
           ...(sheetWarning ? [{
             type: 'text',
             text: sheetWarning,
@@ -973,8 +1004,13 @@ function buildMarutenExpenseLiffUrl(source) {
 }
 
 // 「📋 開支出表單」引導卡片（仿 buildStaffReportGuideFlex）。只在有真 LIFF ID 時呼叫。
-function buildMarutenExpenseFormFlex(source) {
+// balance：該主體目前零用金餘額（getPettyCashBalance().balance）。查詢失敗傳 null → 餘額行顯示「－（暫無法顯示）」，
+//          不影響開表單卡片本身（graceful：餘額是加值，不可擋開表單）。
+function buildMarutenExpenseFormFlex(source, balance) {
   const liffUrl = buildMarutenExpenseLiffUrl(source);
+  const balanceAvailable = balance !== null && balance !== undefined && Number.isFinite(Number(balance));
+  const balanceText = formatPettyCashBalanceText(balance);
+  const balanceColor = balanceAvailable && Number(balance) < 0 ? CARD_THEME.danger : CARD_THEME.primaryDark;
   return {
     type: 'flex',
     altText: '丸十支出表單',
@@ -1001,6 +1037,18 @@ function buildMarutenExpenseFormFlex(source) {
               { type: 'text', text: '3. 按送出就好，小瀾會自動寫進支出表', size: 'sm', color: CARD_THEME.text, wrap: true },
             ],
           },
+          // 開表單前先讓使用者看到目前零用金還剩多少（與打字版／表單完成頁同口徑）。
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: '目前餘額', size: 'sm', color: CARD_THEME.muted, flex: 2 },
+              { type: 'text', text: balanceText, size: 'md', color: balanceColor, flex: 5, weight: 'bold', wrap: true },
+            ],
+          },
+          ...(balanceAvailable && Number(balance) < 0
+            ? [{ type: 'text', text: '⚠️ 已超支', size: 'sm', color: CARD_THEME.danger, weight: 'bold' }]
+            : []),
           { type: 'text', text: '懶得開表單？直接打「#支出 便當 120」也可以。', size: 'xs', color: CARD_THEME.muted, wrap: true },
         ],
       },
@@ -1035,7 +1083,16 @@ async function handleMarutenExpense(event, cleanedText, focusKey) {
     //  - 沒設 LIFF（或仍是佔位）→ 回打字用法提示（打字版仍可用）。
     const liffId = getMarutenExpenseLiffId();
     if (liffId) {
-      return [buildMarutenExpenseFormFlex(event.source)];
+      // 開表單前算一次當前餘額顯示在卡片上（graceful：查詢失敗 → null → 餘額行顯示「－（暫無法顯示）」，不擋開表單）。
+      let openBalance = null;
+      try {
+        const info = await getPettyCashBalance(entity);
+        openBalance = info ? info.balance : null;
+      } catch (e) {
+        console.error('maruten_expense_form_balance_error', e?.message);
+        openBalance = null;
+      }
+      return [buildMarutenExpenseFormFlex(event.source, openBalance)];
     }
     return [{ type: 'text', text: '記帳格式：#支出 <項目> <金額>，例如「#支出 便當 120」。' }];
   }
@@ -1090,8 +1147,28 @@ async function handleMarutenExpense(event, cleanedText, focusKey) {
     sheetWarning = '⚠️ 已記到資料庫，但同步丸十支出表失敗（稍後可補）。';
   }
 
+  // 記帳後算一次該主體零用金餘額顯示在卡片／文字上（沿用 #補錢 graceful 慣例）。
+  // 餘額查詢失敗時**不擋記帳、不放假數字**：DB 已寫成功，只是此刻算不出餘額 → balance=null，
+  // 卡片餘額行退化成「－（暫無法顯示）」、文字訊息略過餘額（吸取上次 deleted 欄事件教訓：
+  // 絕不能讓「顯示餘額」變成記帳失敗的新原因）。
+  let balanceInfo = null;
+  try {
+    balanceInfo = await getPettyCashBalance(entity);
+  } catch (e) {
+    console.error('maruten_expense_balance_error', e?.message);
+    balanceInfo = null;
+  }
+  const balanceValue = balanceInfo ? balanceInfo.balance : null;
+  // 文字訊息的餘額後綴：算得出才附「｜目前餘額 NT$X（⚠️ 已超支）」，算不出就不放（卡片仍會標「－（暫無法顯示）」）。
+  let balanceSuffix = '';
+  if (balanceValue !== null && Number.isFinite(Number(balanceValue))) {
+    const balanceText = Number(balanceValue).toLocaleString('zh-TW');
+    const overspent = balanceValue < 0 ? '（⚠️ 已超支）' : '';
+    balanceSuffix = `｜目前餘額 NT$${balanceText}${overspent}`;
+  }
+
   return [
-    { type: 'text', text: `已記帳：${entity}｜${parsed.category}｜${parsed.note}｜NT$${parsed.amount}｜${recorder}` },
+    { type: 'text', text: `已記帳：${entity}｜${parsed.category}｜${parsed.note}｜NT$${parsed.amount}｜${recorder}${balanceSuffix}` },
     buildMarutenExpenseFlex({
       entity,
       category: parsed.category,
@@ -1100,6 +1177,7 @@ async function handleMarutenExpense(event, cleanedText, focusKey) {
       recorder,
       dateText,
       sheetWarning,
+      balance: balanceValue,
     }),
   ];
 }
@@ -1189,9 +1267,14 @@ function isMarutenTopupTrigger(text) {
   const rest = body.replace(/^補錢[\s:：]*/, '').trim();
   // 只打「#補錢」（後面空字串）→ 命中（走用法提示分支）。
   if (!rest) return true;
-  // 補錢後第一個「詞」（連續非空白字元）若完全等於查詢詞 → 視為查詢句，不觸發。
-  const firstWord = rest.split(/[\s:：]+/)[0];
-  if (TOPUP_QUERY_WORDS.includes(firstWord)) return false;
+  // 查詢句排除（上輪 P2）：rest 以任一查詢詞為「前綴」、且「整段不含任何數字」→ 視為查詢句（看明細／看表），不觸發。
+  //   - 用「前綴」而非「完全等於第一個空白分隔詞」：才能排掉黏字（明細表）與後接修飾詞（查詢一下、統計表）。
+  //   - 「整段不含數字」是不誤殺的關鍵：以查詢詞開頭但後面確實接金額者（明細本 100／統計 5000／明細 -100／
+  //     明細 NT$300）一律放行命中、交 handler 統一處理（含維持既有 P1：負數要命中再由 handler 回提示，不可漏接）。
+  // 先去掉前綴與查詢詞之間可能的空白／冒號，再判前綴（涵蓋「#補錢 明細表」這種帶空白的黏字查詢）。
+  const restNoLead = rest.replace(/^[\s:：]+/, '');
+  const hasDigit = /\d/.test(rest);
+  if (!hasDigit && TOPUP_QUERY_WORDS.some((w) => restNoLead.startsWith(w))) return false;
   // 其餘（含金額、負號、貨幣符號、品項備註後接金額…）一律命中，交 handler 統一處理。
   return true;
 }

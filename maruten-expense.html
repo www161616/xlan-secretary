@@ -305,6 +305,12 @@
       ['記錄人', data.recorder || ''],
       ['日期', data.dateText || ''],
     ];
+    // 目前餘額：後端回 data.balance（記帳後餘額）。查詢失敗時為 null → 顯示「－（暫無法顯示）」（與群組卡片同文案）。
+    // 注意：Number(null)===0 且 isFinite(0)===true，故先排除 null/undefined，否則查詢失敗會被誤顯示成 NT$ 0。
+    var balVal = data.balance;
+    var balOk = balVal !== null && balVal !== undefined && isFinite(Number(balVal));
+    var balText = balOk ? ('NT$ ' + Number(balVal).toLocaleString('zh-TW') + (Number(balVal) < 0 ? '（已超支）' : '')) : '－（暫無法顯示）';
+    rows.push(['目前餘額', balText]);
     if (data.memo) rows.push(['備註', data.memo]);
     // P2-1：有照片上傳失敗時，完成頁明確顯示「N 張（M/總 失敗）」，別讓使用者以為全成功。
     var failed = data.receiptFailedCount || 0;

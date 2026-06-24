@@ -143,6 +143,58 @@ test('觸發排除：「#補錢紀錄」「#補錢清單」不觸發補錢', () 
   assert.equal(isMarutenTopupTrigger('#補錢清單'), false);
 });
 
+// ====================== 收尾C：deny-list 邊界（上輪 P2）======================
+// 上輪 P2：查詢詞「黏字」（#補錢明細表）或「後接修飾詞」（#補錢查詢一下）排不掉
+//   ——舊邏輯只比對「第一個空白分隔詞是否完全等於查詢詞」，黏字／帶修飾會落空 → 誤命中補錢分支。
+// 改法（CEO 指定）：rest 以任一查詢詞為 prefix、且其後不接「金額/貨幣符號/負號」時 → 視為查詢句排除。
+//   這樣「以查詢詞開頭但其實後接金額」的記帳（#補錢明細本 100）仍命中，不誤殺。
+test('收尾C：「#補錢明細表」不觸發補錢（查詢詞黏字，舊版漏排）', () => {
+  assert.equal(isMarutenTopupTrigger('#補錢明細表'), false);
+});
+
+test('收尾C：「#補錢查詢一下」不觸發補錢（查詢詞後接修飾詞，舊版漏排）', () => {
+  assert.equal(isMarutenTopupTrigger('#補錢查詢一下'), false);
+  assert.equal(isMarutenTopupTrigger('#補錢明細一下'), false);
+  assert.equal(isMarutenTopupTrigger('#補錢統計表'), false);
+});
+
+test('收尾C：「#補錢 明細表」（查詢詞黏字＋前空白）也不觸發', () => {
+  assert.equal(isMarutenTopupTrigger('#補錢 明細表'), false);
+  assert.equal(isMarutenTopupTrigger('＃補錢 查詢一下'), false);
+});
+
+// 不誤殺：以查詢詞開頭、但後面確實接金額（含貨幣／負號）→ 仍是補錢指令，必須命中（交 handler）。
+test('收尾C 不誤殺：「#補錢明細本 100」仍命中（查詢詞開頭但後接金額＝記帳）', () => {
+  assert.equal(isMarutenTopupTrigger('#補錢明細本 100'), true);
+});
+
+test('收尾C 不誤殺：「#補錢統計 5000」仍命中（後接金額）', () => {
+  assert.equal(isMarutenTopupTrigger('#補錢統計 5000'), true);
+});
+
+test('收尾C 不誤殺：「#補錢明細 -100」仍命中（後接負號，交 handler 回提示，不可漏接）', () => {
+  // 維持既有 P1：負數要命中再由 handler 擋（不可因「明細」開頭就 fall through 靜默）。
+  assert.equal(isMarutenTopupTrigger('#補錢明細 -100'), true);
+});
+
+test('收尾C 不誤殺：「#補錢明細 NT$300」仍命中（後接貨幣符號＋金額）', () => {
+  assert.equal(isMarutenTopupTrigger('#補錢明細 NT$300'), true);
+});
+
+test('收尾C 回歸：純查詢詞單獨出現仍排除（明細／表／查詢／報表…）', () => {
+  for (const w of ['明細', '紀錄', '記錄', '清單', '查詢', '統計', '報表', '總計', '彙總', '表']) {
+    assert.equal(isMarutenTopupTrigger(`#補錢${w}`), false, `#補錢${w} 應視為查詢、不觸發補錢`);
+  }
+});
+
+test('收尾C 回歸：正常補錢（含備註前綴、純金額）不受影響', () => {
+  assert.equal(isMarutenTopupTrigger('#補錢 10000'), true);
+  assert.equal(isMarutenTopupTrigger('#補錢10000'), true);
+  assert.equal(isMarutenTopupTrigger('#補錢 現金 1000'), true);
+  assert.equal(isMarutenTopupTrigger('#補錢 六月零用金 5000'), true);
+  assert.equal(isMarutenTopupTrigger('#補錢'), true); // 只打補錢 → 命中走用法提示
+});
+
 test('觸發不搶：「#支出 便當 120」不被補錢觸發', () => {
   assert.equal(isMarutenTopupTrigger('#支出 便當 120'), false);
 });
@@ -192,12 +244,20 @@ test('餘額不搶：「#補錢 10000」不被餘額觸發', () => {
 // ====================== 任務1：餘額計算（可觀測假 supabase）======================
 // 簡化版 observable supabase：xlan_expenses 的 select（無 id 過濾）回傳全部列，
 // 並**忠實套用 .eq('entity', x) 與 .eq('type', x) 過濾**，以便真的驗到「只算本 entity」。
-function makeBalanceSupabase(rows) {
+function makeBalanceSupabase(rows, opts = {}) {
   let expenses = [...rows];
+  // 欄位守門（預設開）：select 到 xlan_expenses 清單外的欄位 → 比照真實 PostgREST 回 error，
+  // 讓 getPettyCashBalance 的 `if (error) throw` 炸出來（重現上次 deleted 欄事件，使測試守得住）。
+  // opts.knownColumns 可覆寫清單（守門測試用它模擬「DB 缺某欄」）；opts.checkColumns:false 可整個關掉。
+  const checkColumns = opts.checkColumns !== false;
+  const knownColumns = opts.knownColumns || stubs.XLAN_EXPENSES_COLUMNS;
+  function unknownCols(sel) {
+    return stubs.parseSelectColumns(sel).filter((c) => !knownColumns.includes(c));
+  }
   function from(table) {
     const b = {
-      _op: null, _f: {},
-      select() { if (!this._op) this._op = 'select'; return this; },
+      _op: null, _f: {}, _sel: '',
+      select(cols) { if (!this._op) this._op = 'select'; this._sel = cols || ''; return this; },
       insert(r) { this._op = 'insert'; this._row = r; return this; },
       eq(c, v) { this._f[c] = v; return this; },
       order() { return this; }, limit() { return this; },
@@ -206,6 +266,14 @@ function makeBalanceSupabase(rows) {
       then(res, rej) { return this._run(false).then(res, rej); },
       async _run(single) {
         if (table === 'xlan_expenses' && this._op === 'select') {
+          // 真實 PostgREST：select 到不存在的欄 → 回 { data:null, error:{ message } }（不 throw）。
+          if (checkColumns) {
+            const bad = unknownCols(this._sel);
+            if (bad.length) {
+              const error = { message: `column xlan_expenses.${bad[0]} does not exist` };
+              return single ? { data: null, error } : { data: null, error };
+            }
+          }
           let out = expenses;
           if (this._f.entity !== undefined) out = out.filter((e) => e.entity === this._f.entity);
           if (this._f.type !== undefined) out = out.filter((e) => e.type === this._f.type);
@@ -306,6 +374,49 @@ test('餘額防呆：已標 deleted=true 的列不算進加總（沿用 getExpen
   const r = await wh.getPettyCashBalance('丸十');
   assert.equal(r.expense, 120, '已標 deleted 的 9999 不可算進支出');
   assert.equal(r.balance, 9880);
+});
+
+// ====================== 收尾B：schema 欄位守門（防「測試綠但真實 DB 爆」重演）======================
+// 教訓：上次 getPettyCashBalance 的 select 引用真實 DB 不存在的 `deleted` 欄，假 supabase 照單全收
+//   → 測試全綠、真實 PostgREST 卻回「column does not exist」上線爆掉。
+// 機制：假 supabase（makeBalanceSupabase）預設開「欄位守門」——select 到 xlan_expenses 已知欄位清單
+//   （test/_stubs.js XLAN_EXPENSES_COLUMNS，與 setup-db.sql 對齊）以外的欄 → 比照真實 PostgREST 回 error，
+//   使 getPettyCashBalance 的 `if (error) throw` 炸出來。下列三條測試把這道守門釘死。
+
+test('守門B-正向：getPettyCashBalance 用到的欄位都在 xlan_expenses 已知清單內（select 不報錯、不拋例外）', async () => {
+  // 預設守門開啟；只要 getPettyCashBalance 的 select 全是已知欄，就能正常算出餘額（不拋錯）。
+  const sb = makeBalanceSupabase([
+    { id: '1', entity: '丸十', type: 'deposit', amount: 10000 },
+    { id: '2', entity: '丸十', type: 'expense', amount: 120 },
+  ]);
+  const wh = loadWebhook(sb.client);
+  const r = await wh.getPettyCashBalance('丸十');   // 若 select 含未知欄，這裡會 throw → 測試紅
+  assert.equal(r.balance, 9880, '欄位都存在時餘額照常算出');
+});
+
+test('守門B-反向：若 DB 缺 deleted 欄（從已知清單拿掉）→ getPettyCashBalance 會拋錯（證明守門真的擋得住）', async () => {
+  // 模擬「真實 DB 沒有 deleted 欄」：把 deleted 從已知清單移除。
+  // 由於 getPettyCashBalance 的 select 仍含 deleted，假 supabase 比照真實 PostgREST 回 error → 函式拋錯。
+  // 這正是上次上線爆掉的情形——本條確保「未來有人 select 不存在欄位」時測試會立刻變紅。
+  const columnsWithoutDeleted = stubs.XLAN_EXPENSES_COLUMNS.filter((c) => c !== 'deleted');
+  const sb = makeBalanceSupabase(
+    [{ id: '1', entity: '丸十', type: 'deposit', amount: 10000 }],
+    { knownColumns: columnsWithoutDeleted },
+  );
+  const wh = loadWebhook(sb.client);
+  await assert.rejects(
+    () => wh.getPettyCashBalance('丸十'),
+    /column xlan_expenses\.deleted does not exist/,
+    '缺欄時必須拋出 PostgREST 風格錯誤（守門生效），而非靜默回假數字',
+  );
+});
+
+test('守門B-清單同步：setup-db.sql 對 xlan_expenses 定義的欄位都在已知清單內（清單不漏欄）', () => {
+  // 反向保護：避免「DB 真的加了欄、但測試清單忘了同步」導致守門把合法欄誤判為未知。
+  // 這幾欄是 getPettyCashBalance／getExpenses／saveExpense 會碰到的核心欄，必須都在清單。
+  for (const col of ['id', 'amount', 'type', 'entity', 'deleted', 'recorder', 'sheet_row', 'account', 'category', 'note', 'created_at']) {
+    assert.ok(stubs.XLAN_EXPENSES_COLUMNS.includes(col), `已知欄位清單應包含 ${col}（與 setup-db.sql 對齊）`);
+  }
 });
 
 // ====================== 任務3／4：handler 主體閘門靜默 ======================
