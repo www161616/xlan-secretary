@@ -121,7 +121,7 @@ function loadWebhook(supabaseClient, marutenMod) {
 }
 
 // ========================== P0 ==========================
-test('P0：未設定主體的群組打 #支出 → 回提示、不寫 DB', async () => {
+test('P0：未設定主體的群組打 #支出 → 完全靜默(null)、不寫 DB', async () => {
   const sb = makeObservableSupabase({ kv: {} }); // 無 group_entity_map
   const fm = makeFakeMaruten();
   const wh = loadWebhook(sb.client, fm.mod);
@@ -129,37 +129,35 @@ test('P0：未設定主體的群組打 #支出 → 回提示、不寫 DB', async
   const event = { source: { type: 'group', groupId: 'G-unknown', userId: 'U1' }, message: { type: 'text' } };
   const reply = await wh.handleMarutenExpense(event, '支出 便當 120', 'focus:G-unknown');
 
-  assert.ok(Array.isArray(reply));
-  assert.match(reply[0].text, /尚未設定支出主體/);
+  assert.equal(reply, null, '未設定主體 → 完全靜默 return null（呼叫端不回訊息、不 fall through 到閒聊）');
   assert.equal(sb.log.inserts.length, 0, '未設定主體不可寫 DB');
   assert.equal(fm.calls.append.length, 0, '未設定主體不可寫 Sheet');
 });
 
-test('P0：未設定主體提示要附上當前 groupId（方便管理員拿去設定）', async () => {
+test('P0（根因）：未設定主體 + 單獨 #支出（沒金額）→ 也完全靜默(null)、不冒開表單卡片', async () => {
   const sb = makeObservableSupabase({ kv: {} }); // 無 group_entity_map
   const fm = makeFakeMaruten();
   const wh = loadWebhook(sb.client, fm.mod);
 
   const event = { source: { type: 'group', groupId: 'G-need-setup', userId: 'U1' }, message: { type: 'text' } };
-  const reply = await wh.handleMarutenExpense(event, '支出 便當 120', 'focus:G-need-setup');
+  // 單獨「支出」沒金額：未設定主體時也不可冒出開表單卡片連結（這正是上次在群組出包的根因）。
+  const reply = await wh.handleMarutenExpense(event, '支出', 'focus:G-need-setup');
 
-  assert.match(reply[0].text, /尚未設定支出主體/);
-  assert.match(reply[0].text, /G-need-setup/, '提示應含當前 groupId 供複製設定');
+  assert.equal(reply, null, '未設定主體 → 靜默 null，絕不發開表單卡片');
   assert.equal(sb.log.inserts.length, 0, '仍維持 P0：未設定不寫 DB');
   assert.equal(fm.calls.append.length, 0, '仍維持 P0：未設定不寫 Sheet');
 });
 
-test('P0：未設定主體＋私訊（無 groupId）→ 顯示「無群組ID」且仍不記帳', async () => {
+test('P0：未設定主體＋私訊（無 groupId）→ 也靜默(null)、不記帳', async () => {
   const sb = makeObservableSupabase({ kv: {} });
   const fm = makeFakeMaruten();
   const wh = loadWebhook(sb.client, fm.mod);
 
-  // 私訊來源沒有 groupId（event.source 只有 userId）。
+  // 私訊來源沒有 groupId（event.source 只有 userId）→ getEntityForGroup 回 null → 靜默。
   const event = { source: { type: 'user', userId: 'U1' }, message: { type: 'text' } };
   const reply = await wh.handleMarutenExpense(event, '支出 便當 120', 'focus:U1');
 
-  assert.match(reply[0].text, /尚未設定支出主體/);
-  assert.match(reply[0].text, /無群組ID/, '無 groupId 時應妥善顯示「無群組ID」');
+  assert.equal(reply, null, '無 groupId／未設定 → 靜默 null');
   assert.equal(sb.log.inserts.length, 0, '仍維持 P0：未設定不寫 DB');
 });
 
@@ -349,7 +347,7 @@ test('切片二：單獨 #支出 ＋ 沒設 env（用寫死真 LIFF 後備）→
     assert.equal(reply[0].type, 'flex', '有真 LIFF 後備值 → 應發 flex 卡片');
     const btn = reply[0].contents.footer.contents[0];
     assert.equal(btn.action.type, 'uri');
-    assert.match(btn.action.uri, /2009806013-ON2KtCsF/, '卡片應指向真 LIFF 後備值');
+    assert.match(btn.action.uri, /2009806013-sND5Erbq/, '卡片應指向真 LIFF 後備值');
     assert.equal(sb.log.inserts.length, 0, '只開表單、不可寫 DB');
   });
 });

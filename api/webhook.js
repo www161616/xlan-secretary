@@ -25,7 +25,7 @@ const STAFF_LIFF_ID = process.env.STAFF_LIFF_ID; // 員工回報 LIFF 表單的 
 // 丸十支出 LIFF 表單（#支出 切片二）的 LIFF ID。env 有設且非空白就用它；否則用寫死後備值。
 // 後備值＝老闆已註冊的真 LIFF app（與 api/maruten-expense-form.js 一致），故不必設 env，單獨 #支出 即會發「開支出表單」卡片。
 // 舊佔位常數仍保留：若 env 被設成佔位值，視同「沒設 LIFF」→ 回打字用法提示，不發無效卡片（向下相容）。
-const MARUTEN_EXPENSE_LIFF_ID = (process.env.MARUTEN_EXPENSE_LIFF_ID || '').trim() || '2009806013-ON2KtCsF';
+const MARUTEN_EXPENSE_LIFF_ID = (process.env.MARUTEN_EXPENSE_LIFF_ID || '').trim() || '2009806013-sND5Erbq';
 const MARUTEN_EXPENSE_LIFF_PLACEHOLDER = '0000000000-MarutenExp'; // 佔位值（與 api/maruten-expense-form.js 一致）
 
 const CARD_THEME = {
@@ -1009,28 +1009,25 @@ function buildMarutenExpenseFormFlex(source) {
 // --- 任務4 主流程：處理一則 #支出 群組訊息 ---
 // cleanedText：已去 # 與 @ 提及的內容（例如「支出 便當 120」）。回傳要回覆的 messages 陣列，或 null（解析失敗，讓鏈往下走）。
 async function handleMarutenExpense(event, cleanedText, focusKey) {
+  const groupId = event?.source?.groupId || '';
+  // 先檢查主體：未設定主體的群組（含測試期間的丸十群組、任何其他群組）打 #支出
+  //  → 回 null「完全靜默」：呼叫端不 replyMessage、也不 fall through 到閒聊，避免在群組冒泡。
+  //    （要設定主體請先用「#群組id」指令拿到 groupId，再設 group_entity_map。維持 P0：未設定一律不記帳。）
+  const entity = await getEntityForGroup(groupId);
+  if (!entity) {
+    return null;
+  }
+
   const parsed = parseMarutenExpenseText(cleanedText);
   if (!parsed) {
-    // #支出 命中但抽不到金額（單獨 #支出、或只打分類沒金額）：
-    //  - 有設丸十支出 LIFF → 回「開支出表單」卡片（切片二的主入口）。
+    // 已設定主體 + 單獨 #支出（或只打分類沒金額）：
+    //  - 有設丸十支出 LIFF → 回「開支出表單」卡片（切片二主入口）。
     //  - 沒設 LIFF（或仍是佔位）→ 回打字用法提示（打字版仍可用）。
-    // 兩條路都明確 return，不往下走（避免被當成別的指令或閒聊）。
     const liffId = getMarutenExpenseLiffId();
     if (liffId) {
       return [buildMarutenExpenseFormFlex(event.source)];
     }
     return [{ type: 'text', text: '記帳格式：#支出 <項目> <金額>，例如「#支出 便當 120」。' }];
-  }
-
-  const groupId = event?.source?.groupId || '';
-  // 主體一律由「群組 → 主體」對應決定，不寫死 fallback。
-  // 未設定主體的群組打 #支出 → 不記帳、明確回提示並 return，避免污染丸十帳（P0）。
-  const entity = await getEntityForGroup(groupId);
-  if (!entity) {
-    // 附上當前群組 ID，方便管理員拿去設定 group_entity_map（私訊等無 groupId 時顯示「無群組ID」）。
-    // 維持 P0：未設定仍不記帳，只是提示多帶 groupId。
-    const groupIdText = groupId || '無群組ID';
-    return [{ type: 'text', text: `⚠️ 本群組尚未設定支出主體，先不記帳。\n群組ID：${groupIdText}\n請管理員設定群組對應的主體（如丸十／央廚／匯洲／全民）後再試。` }];
   }
   const recorder = await getLineDisplayName(event.source);
   const dateText = new Date().toLocaleString('zh-TW', {
@@ -5175,6 +5172,13 @@ async function handleGroupMessage(event) {
         return;
       }
 
+      // --- #群組id：低調回出當前 groupId（給管理員設定 group_entity_map 用，因 #支出 未設定主體會靜默）---
+      if (/^[#＃]\s*(群組id|群組ID|groupid)\s*$/i.test(text.trim())) {
+        const gid = event?.source?.groupId || '無群組ID';
+        await replyMessage(event.replyToken, [{ type: 'text', text: `本群組 ID：${gid}` }]);
+        return;
+      }
+
       // --- #支出 分支（丸十支出記帳）---
       // 用原始 text 精準判斷「#支出」前綴，避免誤吃 #待辦／#回報 等其他指令；命中即處理並 return。
       // 解析來源用 stripGroupHashTrigger(text)（原句去#）而非 cleanedText，免得被引用訊息內容干擾。
@@ -5183,8 +5187,8 @@ async function handleGroupMessage(event) {
         const marutenReply = await handleMarutenExpense(event, expenseText, focusKey);
         if (marutenReply) {
           await replyMessage(event.replyToken, marutenReply);
-          return;
         }
+        return;   // 命中 #支出 即 return：未設定主體（marutenReply=null）也靜默、不 fall through 到閒聊
       }
 
       const intent = classifyTextIntent(cleanedText, { mode: 'group', cleaned: true });

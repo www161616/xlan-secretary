@@ -25,7 +25,7 @@ const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 
 // LIFF ID 非機密（本來就會出現在網址）。env 有設且非空白就用它，否則用寫死後備值——
 // 後備值＝老闆已註冊的真 LIFF app（這樣不必去 Vercel 設 env，部署後即可用；env 若有設仍優先）。
-const MARUTEN_EXPENSE_LIFF_ID = (process.env.MARUTEN_EXPENSE_LIFF_ID || '').trim() || '2009806013-ON2KtCsF';
+const MARUTEN_EXPENSE_LIFF_ID = (process.env.MARUTEN_EXPENSE_LIFF_ID || '').trim() || '2009806013-sND5Erbq';
 
 // 收據／發票照片上傳的 Drive 資料夾：優先用專屬的 MARUTEN_RECEIPT_FOLDER_ID，
 // 沒設就沿用員工回報那顆 STAFF_REPORT_IMAGE_FOLDER_ID（同一個 Google 帳號、省設定）。
