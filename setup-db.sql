@@ -163,3 +163,7 @@ ALTER TABLE xlan_todos ADD COLUMN IF NOT EXISTS project_name text;
 ALTER TABLE xlan_expenses ADD COLUMN IF NOT EXISTS entity text;
 -- sheet_row：該筆對應「丸十支出」Google Sheet 的列號，供事後改分類／刪除時精準同步該列。沒寫進 Sheet 的記帳維持 null。
 ALTER TABLE xlan_expenses ADD COLUMN IF NOT EXISTS sheet_row integer;
+
+-- 丸十零用金管理（#補錢／#餘額）：
+-- type 欄位為自由 text，新增值 'deposit' 代表「零用金補入」（與支出 'expense' 區分），不需 migration。
+-- 零用金餘額 ＝ 補入合計(type='deposit') − 支出合計(type='expense')，皆限同一 entity（如 '丸十'）。

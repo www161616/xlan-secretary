@@ -1095,6 +1095,307 @@ async function handleMarutenExpense(event, cleanedText, focusKey) {
 }
 // ==================== 丸十支出記帳（#支出 分支）結束 ====================
 
+// ====================== 丸十零用金管理（#補錢／#餘額 分支）======================
+// 需求單／實作計畫：D:\丸十支出機器人\需求單_零用金.md／實作計畫_零用金.md（任務 1–7）。
+// 設計：補入沿用 xlan_expenses，以 type='deposit' 與支出（type='expense'）區分，不開新表。
+// 餘額 = 補入合計(deposit) − 支出合計(expense)，**兩者都限同一 entity**（漏 entity 會把私訊／別主體算進來）。
+// 補錢／餘額都先過 getEntityForGroup 閘門，未設定主體 → return null 靜默（沿用 #支出 P0，不在別人群組冒泡）。
+
+// --- 任務1：零用金餘額計算 ---
+// 拉回該 entity 的 amount,type,deleted 列，JS 分組加總（單一群組記帳量不大，簡單可測優先；量大再改 RPC）。
+// entity 過濾在 DB 與 JS 兩層都做：DB .eq('entity') 是正確性主力，JS 再濾一次確保即使查詢層被改動也不會混入別主體。
+// deleted 過濾：丸十支出刪除為「硬刪 row」（deleteExpense 走 DB .delete()），理論上不會有 deleted=true 殘留；
+// 但沿用 getExpenses 的 P2-4 防禦慣例（萬一未來改 soft delete／回滾殘留半標記），加總一律排除 deleted===true。
+async function getPettyCashBalance(entity) {
+  const empty = { deposit: 0, expense: 0, balance: 0 };
+  if (!entity) return empty;
+  const { data, error } = await supabase
+    .from('xlan_expenses')
+    .select('amount, type, entity, deleted')
+    .eq('entity', entity);
+  if (error) throw new Error(error.message);
+  let deposit = 0;
+  let expense = 0;
+  for (const row of data || []) {
+    if (!row) continue;
+    if (row.entity !== entity) continue;        // 第二層 entity 防護：絕不混 null／別主體
+    if (row.deleted === true) continue;          // 已刪不算（防禦）
+    const amt = Number(row.amount);
+    if (!Number.isFinite(amt)) continue;
+    if (row.type === 'deposit') deposit += amt;
+    else if (row.type === 'expense') expense += amt;
+    // 其他 type（income 等）不計入零用金池子
+  }
+  return { deposit, expense, balance: deposit - expense };
+}
+
+// --- 任務2：解析 #補錢 文字 ---
+// 輸入是「已被 stripGroupHashTrigger 去掉 #、但仍含『補錢』前綴」的字串，例如「補錢 10000 六月零用金」。
+// 沿用 #支出 的金額正則（千分位 , ／NT$ ／元），取最後一個數字當金額。
+// 回傳 { amount, note } 或 null（無金額／金額 ≤ 0／負號開頭）。
+function parseMarutenTopupText(text) {
+  let raw = String(text || '').trim();
+  if (!raw) return null;
+  // 去掉開頭的「補錢」前綴詞（後接空白／冒號／直接接內容皆可）。
+  raw = raw.replace(/^補錢[\s:：]*/, '').trim();
+  if (!raw) return null;
+
+  // 防呆：金額前緊貼負號（如「-100」）視為無效，避免把負數當成正數補入（amountRe 只抓正數，會把 -100 抓成 100）。
+  if (/^-\s*\d/.test(raw)) return null;
+
+  // 抽金額：支援 1,234 / NT$3000 / 3000元 等寫法，取最後一個數字當金額（備註在前、金額在後較自然）。
+  const amountRe = /(?:NT\$?|[$＄])?\s*(\d{1,3}(?:,\d{3})+|\d+)(?:\s*元)?/gi;
+  let match;
+  let last = null;
+  while ((match = amountRe.exec(raw)) !== null) last = match;
+  if (!last) return null;
+  const amount = Number(String(last[1]).replace(/,/g, ''));
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+
+  // 備註 = 原字串扣掉金額那段文字（含其尾綴「元」），去頭尾雜符。
+  const note = raw.slice(0, last.index).concat(raw.slice(last.index + last[0].length))
+    .replace(/[，,、:：]+$/g, '')
+    .trim();
+  return { amount, note };
+}
+
+// 判斷一則原始群組訊息是不是 #補錢 記帳指令。
+// 條件：以「#補錢／＃補錢」開頭，且 ——
+//   (a) 「補錢」後面緊接空白／冒號／結尾／數字（明確的補錢指令，含只打「#補錢」想看用法），或
+//   (b) 去掉 # 後能被 parseMarutenTopupText 解析成功（涵蓋「#補錢10000」這種無空白黏著）。
+// 這樣可精準排除「#補錢明細」「#補錢紀錄」這類含「補錢」開頭卻無金額的查詢句，不誤記。
+function isMarutenTopupTrigger(text) {
+  const raw = String(text || '').trim();
+  if (!/^[#＃]\s*補錢/.test(raw)) return false;
+  const body = stripGroupHashTrigger(raw).replace(/@\S+/g, '').trim();
+  // 只打「#補錢」或「#補錢 」「#補錢:」→ 命中（走用法提示分支）。
+  if (/^補錢[\s:：]*$/.test(body)) return true;
+  // 「補錢」後緊接數字（含 NT$／$／全形＄）→ 一定是補錢；其餘交給 parse 判定。
+  if (/^補錢[\s:：]*(?:NT\$?|[$＄])?\s*\d/.test(body)) return true;
+  return parseMarutenTopupText(body) !== null;
+}
+
+// 判斷是不是 #餘額 查詢指令：必須「單獨打 #餘額」（後面只允許空白），避免「#餘額多少」「#餘額明細」誤觸。
+function isMarutenBalanceTrigger(text) {
+  return /^[#＃]\s*餘額\s*$/.test(String(text || '').trim());
+}
+
+// --- 任務5：零用金確認卡片（補入）---
+function buildPettyCashTopupFlex({ entity, amount, note, recorder, dateText, balance }) {
+  const rows = [
+    ['主體', entity || '丸十'],
+    ['類別', '零用金補入'],
+    ['備註', note || '-'],
+    ['補入金額', `NT$ ${Number(amount).toLocaleString()}`],
+    ['記錄人', recorder || '-'],
+    ['日期', dateText || ''],
+  ];
+  return {
+    type: 'flex',
+    altText: `${entity || '丸十'}零用金補入 NT$${amount}`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: CARD_THEME.page,
+        paddingAll: '20px',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'text',
+            text: `${entity || '丸十'}・零用金補入`,
+            size: 'sm',
+            color: CARD_THEME.primary,
+            weight: 'bold',
+          },
+          {
+            type: 'text',
+            text: `+ NT$ ${Number(amount).toLocaleString()}`,
+            size: 'xxl',
+            weight: 'bold',
+            color: CARD_THEME.success,
+            margin: 'sm',
+          },
+          { type: 'separator', margin: 'lg', color: CARD_THEME.line },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'lg',
+            spacing: 'sm',
+            contents: rows.map(([k, v]) => ({
+              type: 'box',
+              layout: 'horizontal',
+              contents: [
+                { type: 'text', text: k, size: 'sm', color: CARD_THEME.muted, flex: 2 },
+                { type: 'text', text: String(v), size: 'sm', color: CARD_THEME.text, flex: 5, weight: 'bold', wrap: true },
+              ],
+            })),
+          },
+          { type: 'separator', margin: 'lg', color: CARD_THEME.line },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            margin: 'lg',
+            contents: [
+              { type: 'text', text: '目前餘額', size: 'sm', color: CARD_THEME.muted, flex: 2 },
+              { type: 'text', text: `NT$ ${Number(balance).toLocaleString()}`, size: 'md', color: CARD_THEME.primaryDark, flex: 5, weight: 'bold', wrap: true },
+            ],
+          },
+        ],
+      },
+    },
+  };
+}
+
+// --- 任務5：零用金餘額卡片（查詢）---
+function buildPettyCashBalanceFlex({ entity, deposit, expense, balance }) {
+  const rows = [
+    ['累計補入', `NT$ ${Number(deposit).toLocaleString()}`],
+    ['累計支出', `NT$ ${Number(expense).toLocaleString()}`],
+  ];
+  return {
+    type: 'flex',
+    altText: `${entity || '丸十'}零用金餘額 NT$${balance}`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: CARD_THEME.page,
+        paddingAll: '20px',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'text',
+            text: `${entity || '丸十'}・零用金餘額`,
+            size: 'sm',
+            color: CARD_THEME.primary,
+            weight: 'bold',
+          },
+          {
+            type: 'text',
+            text: `NT$ ${Number(balance).toLocaleString()}`,
+            size: 'xxl',
+            weight: 'bold',
+            color: CARD_THEME.primaryDark,
+            margin: 'sm',
+          },
+          { type: 'separator', margin: 'lg', color: CARD_THEME.line },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'lg',
+            spacing: 'sm',
+            contents: rows.map(([k, v]) => ({
+              type: 'box',
+              layout: 'horizontal',
+              contents: [
+                { type: 'text', text: k, size: 'sm', color: CARD_THEME.muted, flex: 3 },
+                { type: 'text', text: String(v), size: 'sm', color: CARD_THEME.text, flex: 5, weight: 'bold', wrap: true },
+              ],
+            })),
+          },
+          {
+            type: 'text',
+            text: '餘額 ＝ 累計補入 − 累計支出',
+            size: 'xxs',
+            color: CARD_THEME.muted,
+            margin: 'md',
+          },
+        ],
+      },
+    },
+  };
+}
+
+// --- 任務3：補錢 handler ---
+// cleanedText：已去 # 與 @ 提及的內容（例如「補錢 10000 六月零用金」）。
+// 回傳要回覆的 messages 陣列，或 null（未設定主體 → 靜默，讓呼叫端不 replyMessage、不 fall through）。
+async function handleMarutenTopup(event, cleanedText, focusKey) {
+  const groupId = event?.source?.groupId || '';
+  // 主體閘門：未設定主體 → 完全靜默（沿用 #支出 P0）。
+  const entity = await getEntityForGroup(groupId);
+  if (!entity) {
+    return null;
+  }
+
+  const parsed = parseMarutenTopupText(cleanedText);
+  if (!parsed) {
+    // 已設定主體 + 沒給有效金額（含只打 #補錢、填 0／負）：回友善用法提示（不靜默，免得以為壞了）。
+    return [{ type: 'text', text: '補錢格式：#補錢 <金額>，例如 #補錢 10000' }];
+  }
+
+  const recorder = await getLineDisplayName(event.source);
+  const dateText = new Date().toLocaleString('zh-TW', {
+    timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  });
+
+  // 存 Supabase：type='deposit' 區分補入、account 歸 business、entity=該主體、類別固定「零用金補入」。
+  let saved;
+  try {
+    saved = await saveExpense({
+      amount: parsed.amount,
+      category: '零用金補入',
+      note: parsed.note,
+      type: 'deposit',
+      account: 'business',
+      entity,
+    });
+  } catch (e) {
+    console.error('maruten_topup_save_error', e?.message);
+    return [{ type: 'text', text: `補錢失敗了（${e?.message || '資料庫錯誤'}），請稍後再試一次。` }];
+  }
+
+  // 算入帳後的新餘額（即時 SUM，不依賴前一筆，並發天然正確）。失敗不影響已存的補入，餘額顯示退化為本次補入額。
+  let balanceInfo;
+  try {
+    balanceInfo = await getPettyCashBalance(entity);
+  } catch (e) {
+    console.error('maruten_topup_balance_error', e?.message);
+    balanceInfo = { deposit: parsed.amount, expense: 0, balance: parsed.amount };
+  }
+
+  void saved; // saved 目前不再被後續流程使用（補入不接「改分類／刪除」焦點），保留變數供除錯。
+  return [
+    { type: 'text', text: `已補入：${entity}｜零用金補入｜NT$${parsed.amount}｜${recorder}｜目前餘額 NT$${balanceInfo.balance}` },
+    buildPettyCashTopupFlex({
+      entity,
+      amount: parsed.amount,
+      note: parsed.note,
+      recorder,
+      dateText,
+      balance: balanceInfo.balance,
+    }),
+  ];
+}
+
+// --- 任務4：餘額 handler ---
+// 回傳要回覆的 messages 陣列，或 null（未設定主體 → 靜默）。
+async function handleMarutenBalance(event) {
+  const groupId = event?.source?.groupId || '';
+  const entity = await getEntityForGroup(groupId);
+  if (!entity) {
+    return null;
+  }
+
+  let info;
+  try {
+    info = await getPettyCashBalance(entity);
+  } catch (e) {
+    console.error('maruten_balance_query_error', e?.message);
+    return [{ type: 'text', text: `查餘額失敗了（${e?.message || '資料庫錯誤'}），請稍後再試一次。` }];
+  }
+
+  return [
+    { type: 'text', text: `${entity}零用金餘額：NT$${info.balance}（累計補入 NT$${info.deposit}／累計支出 NT$${info.expense}）` },
+    buildPettyCashBalanceFlex({ entity, deposit: info.deposit, expense: info.expense, balance: info.balance }),
+  ];
+}
+// ==================== 丸十零用金管理（#補錢／#餘額 分支）結束 ====================
+
 function isBriefingCommand(text) {
   return /^(盤點|任務盤點|幫我整理一下|幫我排一下|幫我排順序|排優先順序|今天要做什麼|今天先做什麼|先做什麼|先做哪個|哪個先做|我現在該做什麼|有什麼事|現在要做什麼|下一步|下一步做什麼|優先順序|今天重點)$/.test(String(text || '').trim());
 }
@@ -5191,6 +5492,26 @@ async function handleGroupMessage(event) {
         return;   // 命中 #支出 即 return：未設定主體（marutenReply=null）也靜默、不 fall through 到閒聊
       }
 
+      // --- #補錢 分支（丸十零用金補入）---
+      // #補錢 不以「#支出」開頭，與上方分支天然不衝突；命中即處理並 return（未設定主體靜默）。
+      if (isMarutenTopupTrigger(text)) {
+        const topupText = stripGroupHashTrigger(text).replace(/@\S+/g, '').trim();
+        const topupReply = await handleMarutenTopup(event, topupText, focusKey);
+        if (topupReply) {
+          await replyMessage(event.replyToken, topupReply);
+        }
+        return;   // 命中 #補錢 即 return：未設定主體（topupReply=null）也靜默、不 fall through
+      }
+
+      // --- #餘額 分支（丸十零用金餘額查詢）---
+      if (isMarutenBalanceTrigger(text)) {
+        const balanceReply = await handleMarutenBalance(event);
+        if (balanceReply) {
+          await replyMessage(event.replyToken, balanceReply);
+        }
+        return;   // 命中 #餘額 即 return：未設定主體（balanceReply=null）也靜默、不 fall through
+      }
+
       const intent = classifyTextIntent(cleanedText, { mode: 'group', cleaned: true });
       console.log('intent_router', { mode: 'group', ...intent, text: cleanedText.slice(0, 40) });
 
@@ -5688,5 +6009,14 @@ if (process.env.NODE_ENV === 'test') {
     getMarutenExpenseLiffId,
     buildMarutenExpenseLiffUrl,
     buildMarutenExpenseFormFlex,
+    // 零用金管理（#補錢／#餘額）：解析／觸發／餘額計算／handler／卡片
+    parseMarutenTopupText,
+    isMarutenTopupTrigger,
+    isMarutenBalanceTrigger,
+    getPettyCashBalance,
+    handleMarutenTopup,
+    handleMarutenBalance,
+    buildPettyCashTopupFlex,
+    buildPettyCashBalanceFlex,
   };
 }
