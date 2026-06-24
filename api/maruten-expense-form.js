@@ -335,6 +335,21 @@ function buildExpenseConfirmText({ entity, category, note, amount, recorder, dat
   return lines.join('\n');
 }
 
+// --- 純函數：組 flex 卡片的 altText 短摘要（P1：審查報告 v0.1）---
+// altText 是 flex 訊息的通知列／純文字後備，LINE Messaging API 對它有長度上限（官方 400 字元）。
+// 舊版直接用 buildExpenseConfirmText 當 altText：含未限長的 note／sheetWarning，長項目或長錯誤訊息
+// 會讓 altText 超過上限 → push 整則 400 退件 → 記帳成功但群組卡片送不出去、使用者零回饋。
+// 故 altText 改用本函式：固定短摘要「<主體>支出 <分類> NT$<金額>：<項目>」，並整體截到安全長度（≤200，
+// 遠在 LINE 400 上限內、留足餘裕），超長裁切並以「…」結尾；不夾帶 sheetWarning 等可變長內容（那些留給卡片本體呈現）。
+const FLEX_ALTTEXT_MAX = 200; // altText 安全上限（< LINE 官方 400，留餘裕）
+function buildFlexAltText({ entity, category, amount, note }) {
+  const amountText = Number.isFinite(Number(amount)) ? Number(amount).toLocaleString() : String(amount);
+  const summary = `${entity || '丸十'}支出 ${category || '其他'} NT$${amountText}：${note || '-'}`;
+  if (summary.length <= FLEX_ALTTEXT_MAX) return summary;
+  // 超長 → 裁到 (上限-1) 再補「…」，確保含截斷符號後仍 ≤ 上限。
+  return `${summary.slice(0, FLEX_ALTTEXT_MAX - 1)}…`;
+}
+
 // --- 純函數：組表單版群組確認 flex 卡片（P1-1；老闆指定要卡片不要純文字）---
 // 風格需與 webhook.js buildMarutenExpenseFlex 一致：同樣的 kilo bubble、標題「<主體>・支出」、大字金額、
 // 分隔線、欄位列、CARD_THEME_FORM 配色、「目前餘額」列（負餘額紅字標已超支）。
@@ -342,7 +357,7 @@ function buildExpenseConfirmText({ entity, category, note, amount, recorder, dat
 // 與打字版差異：表單版是 push（無 replyToken），故不放「改分類／刪除」這類需要按鈕回呼的 footer，
 //             改在底部以小字提示「直接打 #支出 也可以調整」；視覺主體（標題/金額/欄位/餘額）與打字版維持一致。
 // balance：記帳後該主體零用金餘額（查詢失敗傳 null → 餘額列顯示「－（暫無法顯示）」，記帳已完成、不受影響）。
-// 回傳完整 LINE 訊息物件 { type:'flex', altText, contents }；altText 用既有摘要（buildExpenseConfirmText）。
+// 回傳完整 LINE 訊息物件 { type:'flex', altText, contents }；altText 用截長短摘要（buildFlexAltText，避免超 LINE 上限）。
 function buildFormExpenseFlex({ entity, category, note, amount, recorder, dateText, receiptCount, receiptFailed, sheetWarning, balance }) {
   const T = CARD_THEME_FORM;
   const amountText = `NT$ ${Number.isFinite(Number(amount)) ? Number(amount).toLocaleString() : String(amount)}`;
@@ -369,8 +384,8 @@ function buildFormExpenseFlex({ entity, category, note, amount, recorder, dateTe
     ['收據照片', receiptText],
   ];
 
-  // altText：沿用既有純文字摘要（通知列／不支援 flex 時顯示）。
-  const altText = buildExpenseConfirmText({ entity, category, note, amount, recorder, dateText, receiptCount, receiptFailed, sheetWarning, balance });
+  // altText：用短摘要並截到安全長度（P1：避免長 note／sheetWarning 撐爆 altText → push 400 退件）。
+  const altText = buildFlexAltText({ entity, category, amount, note });
 
   return {
     type: 'flex',
@@ -700,6 +715,7 @@ if (process.env.NODE_ENV === 'test') {
     validateExpenseForm,
     validateReceiptPhotos,
     buildExpenseConfirmText,
+    buildFlexAltText,
     buildFormExpenseFlex,
     formatPettyCashBalanceText,
     getPettyCashBalance,

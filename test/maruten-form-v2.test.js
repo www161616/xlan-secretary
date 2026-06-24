@@ -205,7 +205,41 @@ test('flex：群組確認＝flex 訊息（type:flex、bubble、altText 為摘要
   assert.equal(card.type, 'flex', '群組確認應為 flex 訊息（非純文字）');
   assert.equal(card.contents.type, 'bubble', 'flex 內容應為 bubble');
   assert.match(card.altText, /員工便當/, 'altText 應為含項目的摘要文字（通知列／不支援 flex 時顯示）');
-  assert.match(card.altText, /目前餘額/, 'altText 摘要也應含目前餘額');
+  assert.match(card.altText, /餐飲/, 'altText 摘要也應含分類');
+});
+
+// P1（審查報告 v0.1）：altText 不可無上限。長 note／sheetWarning 會讓 altText 超過 LINE 上限 → push 400 退件，
+// 記帳成功但群組卡片送不出去。altText 必須是短摘要並截到安全長度（≤200），超長以「…」結尾，且不塞 sheetWarning。
+const FLEX_ALTTEXT_LIMIT = 200;
+test('P1：超長 note → altText 截到 ≤200 且以「…」結尾（不超 LINE 上限）', () => {
+  const longNote = '超長備註'.repeat(125); // 4 字 ×125＝500 字，遠超上限
+  const card = buildFormExpenseFlex({
+    entity: '丸十', category: '餐飲', note: longNote, amount: 1234,
+    recorder: '小明', dateText: '2026/06/24 12:00', receiptCount: 0, receiptFailed: 0, balance: 9880,
+  });
+  assert.ok(card.altText.length <= FLEX_ALTTEXT_LIMIT, `altText 長度應 ≤ ${FLEX_ALTTEXT_LIMIT}，實際 ${card.altText.length}`);
+  assert.ok(card.altText.endsWith('…'), 'altText 截斷後應以「…」結尾');
+});
+
+test('P1：超長 sheetWarning 不得撐爆 altText（altText 仍 ≤200，且不含警告全文）', () => {
+  const longWarning = 'X'.repeat(800); // 模擬很長的同步錯誤訊息
+  const card = buildFormExpenseFlex({
+    entity: '丸十', category: '餐飲', note: '便當', amount: 120,
+    recorder: '小明', dateText: '2026/06/24 12:00', receiptCount: 0, receiptFailed: 0,
+    sheetWarning: longWarning, balance: 9880,
+  });
+  assert.ok(card.altText.length <= FLEX_ALTTEXT_LIMIT, `altText 長度應 ≤ ${FLEX_ALTTEXT_LIMIT}，實際 ${card.altText.length}`);
+  assert.ok(!card.altText.includes(longWarning), 'altText 不應夾帶可變長的 sheetWarning 全文');
+});
+
+test('P1：一般長度 note → altText 完整呈現、不被截（不加「…」）', () => {
+  const card = buildFormExpenseFlex({
+    entity: '丸十', category: '餐飲', note: '員工便當', amount: 1234,
+    recorder: '小明', dateText: '2026/06/24 12:00', receiptCount: 0, receiptFailed: 0, balance: 9880,
+  });
+  assert.ok(card.altText.length <= FLEX_ALTTEXT_LIMIT);
+  assert.ok(!card.altText.endsWith('…'), '未超長時不應出現截斷符號');
+  assert.match(card.altText, /員工便當/, '一般長度仍應含項目');
 });
 
 test('flex：卡片結構含主體/分類/項目/金額/記錄人/日期/收據張數/目前餘額', () => {
@@ -460,6 +494,24 @@ test('P1-1：push 失敗（LINE 回非 2xx）→ 回 false（讓 handler 附 war
   try {
     const ok = await t.pushExpenseConfirm('G-123', { type: 'flex', altText: '內容', contents: { type: 'bubble' } });
     assert.equal(ok, false);
+  } finally {
+    global.fetch = prevFetch;
+    if (prevToken === undefined) delete process.env.LINE_CHANNEL_ACCESS_TOKEN;
+    else process.env.LINE_CHANNEL_ACCESS_TOKEN = prevToken;
+  }
+});
+
+// 覆蓋缺口（審查報告 F-WARN）：先前只測 fetch 回非 2xx，未測 fetch 直接 throw（網路層拋例外）。
+// pushExpenseConfirm 的 try/catch 必須吞掉例外回 false（不可讓例外往上炸，否則會把已完成的記帳搞成 500）。
+test('P1-1：push 時 fetch 拋例外 → 吞掉回 false（不外拋）', async () => {
+  const prevToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+  const prevFetch = global.fetch;
+  process.env.LINE_CHANNEL_ACCESS_TOKEN = 'test-token';
+  const { __test__: t } = loadForm();
+  global.fetch = async () => { throw new Error('network down'); };
+  try {
+    const ok = await t.pushExpenseConfirm('G-123', { type: 'flex', altText: '內容', contents: { type: 'bubble' } });
+    assert.equal(ok, false, 'fetch throw 應被吞掉並回 false');
   } finally {
     global.fetch = prevFetch;
     if (prevToken === undefined) delete process.env.LINE_CHANNEL_ACCESS_TOKEN;
@@ -812,6 +864,51 @@ test('任務3 handler graceful：餘額查詢失敗 → 仍記帳成功、回應
     const texts = flexTexts(pushedMsg);
     assert.ok(texts.includes('－（暫無法顯示）'), '卡片餘額列應退化成 fallback');
     assert.ok(!texts.some((t) => /目前餘額/.test(t) && /NT\$/.test(t)), '查詢失敗時卡片不可出現 NT$ 假餘額');
+  } finally {
+    global.fetch = prevFetch;
+    if (prevToken === undefined) delete process.env.LINE_CHANNEL_ACCESS_TOKEN; else process.env.LINE_CHANNEL_ACCESS_TOKEN = prevToken;
+  }
+});
+
+// 覆蓋缺口（審查報告 F-WARN）：push 的 fetch 直接拋例外（網路層 throw，非單純非 2xx）時，
+// handler 必須 graceful：記帳已完成 → 仍回 200、ok=true、pushed=false，並在 sheetWarning 附「發送失敗」提示，不靜默也不擋。
+test('handler graceful：push 時 fetch 拋例外 → 仍記帳成功、回 200、pushed=false＋warning（不擋）', async () => {
+  const prevToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+  const prevFetch = global.fetch;
+  process.env.LINE_CHANNEL_ACCESS_TOKEN = 'test-token';
+
+  const sb = makeHandlerBalanceSupabase({
+    expenses: [{ id: 'dep', entity: '丸十', type: 'deposit', amount: 10000 }],
+  });
+  stubs.setFakeSupabaseClient(sb.client);
+  const fakeMaruten = makeFakeMarutenMod();
+  stubs.setFakeMarutenModule(fakeMaruten.mod);
+
+  // push 分支直接 throw（模擬網路層例外）；其餘 fetch（如有）正常回 200。
+  let pushAttempted = false;
+  global.fetch = async (url) => {
+    if (String(url).includes('/v2/bot/message/push')) {
+      pushAttempted = true;
+      throw new Error('network down');
+    }
+    return { ok: true, status: 200, async json() { return {}; }, async text() { return ''; } };
+  };
+
+  const p = require.resolve(path.join(__dirname, '..', 'api', 'maruten-expense-form.js'));
+  delete require.cache[p];
+  const handler = require(p);
+
+  const req = { method: 'POST', body: { 分類: '餐飲', 項目: '便當', 金額: 120, groupId: 'G-1', userName: '阿明' } };
+  const res = makeRes();
+  try {
+    await handler(req, res);
+    // push 例外絕不可炸掉已完成的記帳：必須回 200、ok=true、照樣寫入。
+    assert.equal(res.statusCode, 200, 'push fetch throw 也必須回 200（記帳已成功）');
+    assert.equal(res.body.ok, true);
+    assert.equal(sb.inserts.length, 1, '記帳必須成功寫入（push 失敗不擋）');
+    assert.equal(pushAttempted, true, '應有嘗試 push');
+    assert.equal(res.body.pushed, false, 'push 拋例外 → pushed=false');
+    assert.match(res.body.sheetWarning, /發送失敗/, 'sheetWarning 應附群組確認發送失敗提示（不靜默）');
   } finally {
     global.fetch = prevFetch;
     if (prevToken === undefined) delete process.env.LINE_CHANNEL_ACCESS_TOKEN; else process.env.LINE_CHANNEL_ACCESS_TOKEN = prevToken;
