@@ -12,11 +12,15 @@
 //   ALL  /api/maruten-expense-form     → api/maruten-expense-form.js（丸十支出 LIFF 表單）
 //   ALL  /api/oauth                    → api/oauth.js（Google 重發 refresh token）
 //   ALL  /api/staff-report             → api/staff-report.js（總倉回報 LIFF 表單）
-//   ALL  /api/reminder                 → api/reminder.js（提醒；階段二改 node-cron 主動跑）
+//   ALL  /api/reminder                 → api/reminder.js（提醒；仍保留可手動觸發）
 //   GET  /healthz                      → 健康檢查，回 200 "ok"
 //   靜態：index.html / maruten-expense.html / staff.html（express.static 服務）
 //
-// 注意（階段一範圍）：cron、URL 可設定化、Dockerfile/compose、.env.example 都留階段二，本檔不做。
+// 常駐排程（階段二）：原本 reminder 由 Vercel Cron「每小時整點」打 /api/reminder 一次
+//   （見 AGENTS.md：`0 * * * *`）。搬 NAS 沒有 Vercel Cron，改用 node-cron 在本進程內
+//   以同一頻率 `0 * * * *` 呼叫同一套 reminder 邏輯（reminder.js 一行不改）。
+//   頻率必須維持「每小時一次」：reminder 內部用 currentHour===9/15/21 等整點判斷，
+//   且早安／月底總結沒有當日去重，若改每分鐘會重複發 60 次——故沿用原契約。
 
 'use strict';
 
@@ -24,6 +28,7 @@ const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
 const { Readable } = require('stream');
+const cron = require('node-cron');
 
 // 既有 Vercel handler（原樣 require，不改寫）。
 const webhookHandler = require('./api/webhook');
@@ -31,6 +36,9 @@ const marutenExpenseFormHandler = require('./api/maruten-expense-form');
 const oauthHandler = require('./api/oauth');
 const staffReportHandler = require('./api/staff-report');
 const reminderHandler = require('./api/reminder');
+
+// reminder 排程頻率：每小時第 0 分（與原 Vercel Cron `0 * * * *` 一致）。
+const REMINDER_CRON_EXPR = '0 * * * *';
 
 // LINE Channel Secret（與 webhook.js 一致，trim 避免環境變數夾帶空白）。
 const LINE_CHANNEL_SECRET = (process.env.LINE_CHANNEL_SECRET || '').trim();
@@ -122,13 +130,49 @@ function createApp() {
   return app;
 }
 
-// 只有「直接執行」本檔時才真的 listen；被 require（測試）時不自動起服務。
+// 跑一次 reminder 邏輯（cron 觸發用）。
+// reminder.js 是 Vercel 形態 (req,res)=>{}，這裡用最小假 req/res 把它跑完——
+// 它只會讀「沒讀 req」、並對 res 呼叫 status().json()/send()。回傳該 Promise 方便測試 await。
+// 業務邏輯零改動：等同「外部排程打了一次 GET /api/reminder」。
+function runReminderJob(handler = reminderHandler) {
+  const req = { method: 'GET', url: '/api/reminder', headers: {} };
+  const res = {
+    statusCode: 200,
+    status(code) { this.statusCode = code; return this; },
+    json(obj) { this.body = obj; return this; },
+    send(body) { this.body = body; return this; },
+    setHeader() {},
+    end() { return this; },
+  };
+  // handler 內部已有 try/catch 並回 500；這裡再包一層，確保 cron 回呼不因未捕捉 rejection 而中斷排程。
+  return Promise.resolve()
+    .then(() => handler(req, res))
+    .catch((err) => { console.error('reminder cron 執行失敗：', err); });
+}
+
+// 啟動 reminder 的 node-cron 排程（每小時整點）。回傳建立的 task 以利測試／關閉。
+// 時區固定 Asia/Taipei：reminder 內部雖自行用 getTaipeiNow() 取台北時間，
+// 但讓 cron 觸發點也對齊台北整點，語意更清楚、與原 Vercel Cron 行為一致。
+function startReminderCron(scheduler = cron) {
+  return scheduler.schedule(
+    REMINDER_CRON_EXPR,
+    () => { runReminderJob(); },
+    { timezone: 'Asia/Taipei' },
+  );
+}
+
+// 只有「直接執行」本檔時才真的 listen＋起排程；被 require（測試）時都不啟動。
 if (require.main === module) {
   const app = createApp();
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
     console.log(`小瀾常駐服務啟動，PORT=${PORT}`);
   });
+  startReminderCron();
+  console.log(`reminder 排程已啟動（${REMINDER_CRON_EXPR}，Asia/Taipei）`);
 }
 
-module.exports = { createApp, verifyLineSignature, makeRawBodyReq, wrapVercelHandler };
+module.exports = {
+  createApp, verifyLineSignature, makeRawBodyReq, wrapVercelHandler,
+  runReminderJob, startReminderCron, REMINDER_CRON_EXPR,
+};

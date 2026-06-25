@@ -1,0 +1,9 @@
+services:
+  xlan-secretary:
+    build: .
+    container_name: xlan-secretary
+    restart: unless-stopped
+    ports:
+      - "3005:3000"
+    env_file:
+      - .env

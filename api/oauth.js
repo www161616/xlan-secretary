@@ -1,13 +1,20 @@
 // 一鍵重發 Google Refresh Token（取代一次性的 get-token.js）
 // 用 Vercel 既有的 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET，授權後把 refresh token 顯示出來。
-// 需在 Google Cloud Console 的 OAuth 用戶端「已授權的重新導向 URI」加入：
-//   https://xlan-secretary-rqhb.vercel.app/api/oauth
+// 需在 Google Cloud Console 的 OAuth 用戶端「已授權的重新導向 URI」加入本檔算出的 REDIRECT_URI：
+//   Vercel（預設）：https://xlan-secretary-rqhb.vercel.app/api/oauth
+//   NAS（設了 PUBLIC_BASE_URL 後）：<PUBLIC_BASE_URL>/api/oauth ← 記得也去 Google Console 加這條
 const { google } = require('googleapis');
 const { createClient } = require('@supabase/supabase-js');
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-const REDIRECT_URI = 'https://xlan-secretary-rqhb.vercel.app/api/oauth';
+// 對外網址可設定化（搬 NAS 用）：有設 PUBLIC_BASE_URL 就用它組重導 URI，
+// 沒設則 fallback 回原本寫死的 Vercel 網址，確保 Vercel 上行為完全不變。
+// 去掉結尾斜線避免組出 https://host//api/oauth。
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+const REDIRECT_URI = PUBLIC_BASE_URL
+  ? `${PUBLIC_BASE_URL}/api/oauth`
+  : 'https://xlan-secretary-rqhb.vercel.app/api/oauth';
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY) ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
