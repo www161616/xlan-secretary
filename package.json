@@ -3,12 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "start": "node server.js",
     "setup-richmenu": "node scripts/setup-richmenu.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "@line/bot-sdk": "^9.6.0",
     "@supabase/supabase-js": "^2.49.4",
+    "express": "^4.21.2",
     "googleapis": "^171.4.0"
   }
 }
