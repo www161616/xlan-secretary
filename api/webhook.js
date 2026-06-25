@@ -1823,6 +1823,13 @@ function buildExpenseCategoryFlex(expenseId) {
   };
 }
 
+// --- 對外網址（搬 NAS 用，比照 oauth.js 的 A4）---
+// 有設 PUBLIC_BASE_URL 就用它組「後台網址／LINE Webhook」，未設時 fallback 回原 Vercel 值（Vercel 行為不變）。
+// 香奈詢問小瀾網址時，會從下方 SYSTEM_PROMPT 取得這兩個值，故搬 NAS 後要設 PUBLIC_BASE_URL 才會回正確網址。
+const XLAN_PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+const XLAN_CONSOLE_URL = XLAN_PUBLIC_BASE_URL || 'https://xlan-secretary.vercel.app';
+const XLAN_WEBHOOK_URL = `${XLAN_CONSOLE_URL}/webhook`;
+
 // --- System Prompt ---
 const SYSTEM_PROMPT = `【回覆規則】
 1. 絕對不可以主動說明如何把Bot加進群組
@@ -1844,8 +1851,8 @@ const SYSTEM_PROMPT = `【回覆規則】
 同時負責管理 LT-ERP 系統、樂樂團購平台、各門市帳務與薪資。
 
 【小瀾系統資訊】
-- 後台網址：https://xlan-secretary.vercel.app
-- LINE Webhook：https://xlan-secretary.vercel.app/webhook
+- 後台網址：${XLAN_CONSOLE_URL}
+- LINE Webhook：${XLAN_WEBHOOK_URL}
 - GitHub 專案：www161616/xlan-secretary
 - 員工回報 Google Sheet 分頁：員工問題回報
 只有當香奈明確詢問「小瀾後台」「小瀾 webhook」「LINE webhook」「小瀾網址」時，才回答上述小瀾系統資訊。
@@ -6170,5 +6177,9 @@ if (process.env.NODE_ENV === 'test') {
     // 共用記帳：saveExpense（驗 recorder 入庫）、getExpenses（驗 deposit 不污染既有查詢）
     saveExpense,
     getExpenses,
+    // A4 對外網址（P2-3）：驗 PUBLIC_BASE_URL fallback／插值，與 SYSTEM_PROMPT 是否帶入正確網址。
+    XLAN_CONSOLE_URL,
+    XLAN_WEBHOOK_URL,
+    SYSTEM_PROMPT,
   };
 }

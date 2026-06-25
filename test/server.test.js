@@ -188,12 +188,31 @@ test('/healthz 路由有掛載，且回 200 "ok"', () => {
 // ============================================================================
 // 3. 路由掛載表
 // ============================================================================
-test('/webhook 以 POST 掛載，且前置 express.raw 中介層', () => {
+test('/webhook 與 /api/webhook 都以 POST 掛載，且前置 express.raw 中介層', () => {
   const app = createApp();
-  const route = app._find('post', '/webhook');
-  assert.ok(route, '/webhook 應以 POST 掛載');
-  // 第一個 handler 應是 express.raw() 產生的 middleware。
-  assert.equal(route.handlers[0]._kind, 'raw', '/webhook 第一個中介層應為 express.raw');
+  // P1-2：Vercel 把 /webhook rewrite 到 /api/webhook，等價要兩條都通。
+  for (const p of ['/webhook', '/api/webhook']) {
+    const route = app._find('post', p);
+    assert.ok(route, `${p} 應以 POST 掛載`);
+    // 第一個 handler 應是 express.raw() 產生的 middleware。
+    assert.equal(route.handlers[0]._kind, 'raw', `${p} 第一個中介層應為 express.raw`);
+  }
+});
+
+test('/webhook 與 /api/webhook 共用同一套 POST dispatch（同一函式參考）', () => {
+  const app = createApp();
+  const a = app._find('post', '/webhook');
+  const b = app._find('post', '/api/webhook');
+  // raw 中介層與最終 dispatch 都應是同一個函式參考（確保兩路徑行為完全一致）。
+  assert.equal(a.handlers[0], b.handlers[0], '兩路由應共用同一 express.raw 中介層');
+  assert.equal(a.handlers[a.handlers.length - 1], b.handlers[b.handlers.length - 1], '兩路由應共用同一 dispatch');
+});
+
+test('/webhook 與 /api/webhook 也都以 all 掛載（接住 GET 等非 POST，對齊 Vercel webhook.js 行為）', () => {
+  const app = createApp();
+  for (const p of ['/webhook', '/api/webhook']) {
+    assert.ok(app._find('all', p), `${p} 應以 app.all 掛載以接住 GET / 其他方法`);
+  }
 });
 
 test('五個 API 路由都掛載到正確路徑（all 方法）', () => {
@@ -208,11 +227,41 @@ test('五個 API 路由都掛載到正確路徑（all 方法）', () => {
   }
 });
 
-test('有掛載 express.json 與 express.static（服務前端頁）', () => {
+test('有掛載 express.json，但「不」對根目錄開 express.static（白名單化後）', () => {
   const app = createApp();
   const kinds = app._mounts.map(m => m.handlers[0] && m.handlers[0]._kind).filter(Boolean);
   assert.ok(kinds.includes('json'), '應掛 express.json');
-  assert.ok(kinds.includes('static'), '應掛 express.static');
+  // P1-1：安全修正後不再用 express.static(__dirname)，避免整個專案根目錄外洩。
+  assert.ok(!kinds.includes('static'), '不應再對根目錄開 express.static');
+});
+
+test('白名單三頁以固定 GET 路由服務（index/maruten-expense/staff），不接受外部路徑', () => {
+  const app = createApp();
+  for (const p of ['/index.html', '/maruten-expense.html', '/staff.html', '/']) {
+    assert.ok(app._find('get', p), `${p} 應以固定 GET 路由掛載`);
+  }
+  // 反向確認：沒有任何「服務整個目錄」的萬用靜態掛載。
+  const staticMounts = app._mounts.filter(m => m.handlers.some(h => h && h._kind === 'static'));
+  assert.equal(staticMounts.length, 0, '不應存在 express.static 掛載');
+});
+
+test('白名單 GET 路由只 sendFile 白名單內檔名（不洩漏 api/*.js、setup-db.sql 等）', () => {
+  const app = createApp();
+  // 逐一觸發白名單路由，攔截 res.sendFile 收到的絕對路徑，確認 basename 落在白名單內。
+  const path = require('node:path');
+  const allow = new Set(['index.html', 'maruten-expense.html', 'staff.html']);
+  for (const p of ['/index.html', '/maruten-expense.html', '/staff.html', '/']) {
+    const route = app._find('get', p);
+    let sentPath = null;
+    const res = { sendFile(fp) { sentPath = fp; } };
+    route.handlers[route.handlers.length - 1]({ url: p }, res);
+    assert.ok(sentPath, `${p} 應呼叫 res.sendFile`);
+    assert.ok(allow.has(path.basename(sentPath)), `${p} 只能服務白名單檔，實際=${path.basename(sentPath)}`);
+  }
+  // 確認沒有任何路由會服務這些敏感檔（白名單外的路徑根本沒掛 GET 路由 → 交給 Express 預設 404）。
+  for (const sensitive of ['/api/webhook.js', '/setup-db.sql', '/.env', '/package.json', '/server.js']) {
+    assert.equal(app._find('get', sensitive), undefined, `${sensitive} 不應有對應靜態路由（應 404）`);
+  }
 });
 
 test('listen 使用 process.env.PORT 或預設 3000（被 require 時不自動 listen）', () => {

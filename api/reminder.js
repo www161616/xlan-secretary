@@ -794,10 +794,16 @@ module.exports = async (req, res) => {
     const todayStr = getTodayStr(now);
     const sent = [];
 
-    // 1. 早安摘要（9點）
-    if (currentHour === 9) {
+    // 1. 早安摘要（9點，每日去重）
+    // 搬常駐（NAS）後：cron 重跑／手動打 /api/reminder／容器在 9 點重啟，都可能在同一天 9 點重複觸發。
+    // Vercel Cron 保證「每小時剛好一次」，常駐＋重啟不保證，故比照 15 點待辦那條用 KV 記旗標去重。
+    // 注意：只擋「同一天重複」，正常每天一次的發送完全不受影響（隔天 todayStr 變了，旗標自然失效）。
+    // 標記放在 pushMessage 成功之後：推送若拋錯會走到外層 catch，不會誤標記，下個整點仍可補發。
+    const morningKey = `morning_summary_sent:${todayStr}`;
+    if (currentHour === 9 && !(await hasSentDaily(morningKey))) {
       const morning = await buildMorningSummary(now, todayStr, focusKey);
       await pushMessage(ownerLineId, morning);
+      await markSentDaily(morningKey);
       sent.push('morning');
     }
 
@@ -833,11 +839,16 @@ module.exports = async (req, res) => {
       }
     }
 
-    // 6. 月底財務總結（每月最後一天 21 點）
+    // 6. 月底財務總結（每月最後一天 21 點，每月去重）
+    // 同早安：常駐＋重啟下，最後一天 21 點可能重複觸發。用 `monthly_summary_sent:YYYY-MM` 旗標擋同一個月重發，
+    // 不影響正常「每月一次」（換月後 monthStr 變了，旗標自然失效）。todayStr 是 YYYY-MM-DD，取前 7 碼即 YYYY-MM。
+    const monthStr = todayStr.slice(0, 7);
+    const monthlyKey = `monthly_summary_sent:${monthStr}`;
     const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-    if (now.getDate() === lastDay && currentHour === 21) {
+    if (now.getDate() === lastDay && currentHour === 21 && !(await hasSentDaily(monthlyKey))) {
       const summary = await buildMonthlySummary(now, focusKey);
       await pushMessage(ownerLineId, summary);
+      await markSentDaily(monthlyKey);
       sent.push('monthly_summary');
     }
 

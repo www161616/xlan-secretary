@@ -8,13 +8,16 @@
 //             也可作為 NAS 上線後的回滾後備。本檔不改寫它們。
 //
 // 路由（見下方 createApp）：
-//   POST /webhook                     → api/webhook.js（LINE 入口；raw body 驗簽）
+//   ALL  /webhook                      → api/webhook.js（LINE 後台現設的入口；raw body 驗簽）
+//   ALL  /api/webhook                  → 同上（Vercel 的 vercel.json 把 /webhook rewrite 到 /api/webhook，
+//                                        兩條等價，故 NAS 上也都掛同一套 raw 驗簽＋handler）
 //   ALL  /api/maruten-expense-form     → api/maruten-expense-form.js（丸十支出 LIFF 表單）
 //   ALL  /api/oauth                    → api/oauth.js（Google 重發 refresh token）
 //   ALL  /api/staff-report             → api/staff-report.js（總倉回報 LIFF 表單）
 //   ALL  /api/reminder                 → api/reminder.js（提醒；仍保留可手動觸發）
 //   GET  /healthz                      → 健康檢查，回 200 "ok"
-//   靜態：index.html / maruten-expense.html / staff.html（express.static 服務）
+//   靜態：只服務白名單三頁（index.html / maruten-expense.html / staff.html），
+//         「不」對專案根目錄開 express.static，避免 api/*.js、setup-db.sql、.env* 等外洩。
 //
 // 常駐排程（階段二）：原本 reminder 由 Vercel Cron「每小時整點」打 /api/reminder 一次
 //   （見 AGENTS.md：`0 * * * *`）。搬 NAS 沒有 Vercel Cron，改用 node-cron 在本進程內
@@ -96,11 +99,16 @@ function createApp() {
     res.status(200).send('ok');
   });
 
-  // --- LINE Webhook ---
-  // 先用 express.raw 取得「原始 bytes」（type:'*/*' 比照喵秘書，確保任何 Content-Type 都收成 Buffer），
-  // 在進 webhook.js 前先驗簽（壞簽章直接 401，不白跑 handler），
-  // 再把原始 Buffer 包成可重新 for-await 的 req 交給 webhook.js（其內部仍自行讀串流＋驗簽，行為不變）。
-  app.post('/webhook', express.raw({ type: '*/*', limit: '10mb' }), (req, res, next) => {
+  // --- LINE Webhook（/webhook 與 /api/webhook 等價）---
+  // LINE 後台目前設的是 `…/webhook`（老闆確認過），故 /webhook 一定保留可用；
+  // 而 Vercel 的 vercel.json 把 /webhook rewrite 到 /api/webhook，等價要兩條都通，
+  // 所以這裡把「同一套 raw-body 驗簽＋handler」同時掛到 /webhook 與 /api/webhook。
+  //
+  // POST：先用 express.raw 取得「原始 bytes」（type:'*/*' 比照喵秘書，確保任何 Content-Type 都收成 Buffer），
+  //   在進 webhook.js 前先驗簽（壞簽章直接 401，不白跑 handler），
+  //   再把原始 Buffer 包成可重新 for-await 的 req 交給 webhook.js（其內部仍自行讀串流＋驗簽，行為不變）。
+  const rawWebhookMw = express.raw({ type: '*/*', limit: '10mb' });
+  const webhookPostDispatch = (req, res, next) => {
     const rawBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
     const signature = req.headers['x-line-signature'];
     if (!verifyLineSignature(rawBuffer, signature)) {
@@ -110,7 +118,16 @@ function createApp() {
     // return 該 promise：Express 會忽略 route handler 的回傳值（生產行為不變），
     // 但讓呼叫端（測試）能 await 到 handler 真正跑完。
     return Promise.resolve(webhookHandler(rawReq, res)).catch(next);
-  });
+  };
+  // GET（含其他非 POST 方法）：直接交給原 webhook.js handler，對齊 Vercel 行為——
+  //   Vercel 上 GET /webhook 會 rewrite 到 webhook.js，其 GET 回 200 'xlan-secretary is running.'、
+  //   非 GET 非 POST 回 405；這裡不另外處理，原樣轉交即可（行為與 Vercel 一致）。
+  const webhookNonPostDispatch = wrapVercelHandler(webhookHandler);
+
+  for (const webhookPath of ['/webhook', '/api/webhook']) {
+    app.post(webhookPath, rawWebhookMw, webhookPostDispatch);
+    app.all(webhookPath, webhookNonPostDispatch); // 接住同路徑的 GET / 其他方法（POST 已被上面攔下）
+  }
 
   // --- 其餘 API：用 express.json 解析 JSON body ---
   // form / staff-report 的 readJsonBody 會優先吃 req.body（物件），命中此分支即可；
@@ -122,10 +139,21 @@ function createApp() {
   app.all('/api/staff-report', wrapVercelHandler(staffReportHandler));
   app.all('/api/reminder', wrapVercelHandler(reminderHandler));
 
-  // --- 靜態網頁 ---
-  // 服務專案根目錄的三個前端頁（index.html / maruten-expense.html / staff.html）。
-  // 放在 API 路由之後，避免靜態中介層攔截到 /api/* 或 /webhook。
-  app.use(express.static(__dirname, { index: 'index.html', extensions: ['html'] }));
+  // --- 靜態網頁（白名單，不開放整個目錄）---
+  // 安全考量：絕不對專案根目錄開 express.static（否則 api/*.js、setup-db.sql、.env*、test/ 等
+  //   都會被外部直接讀到，是明確資訊洩漏面）。改成只服務「明確列出的三個前端頁」，
+  //   用固定路由 + res.sendFile 指到根目錄下的該檔；不接受任何外部傳入的路徑片段，
+  //   故無路徑穿越（path traversal）風險。新增前端頁時，在此白名單明確加一條即可。
+  const STATIC_WHITELIST = ['index.html', 'maruten-expense.html', 'staff.html'];
+  for (const fileName of STATIC_WHITELIST) {
+    app.get(`/${fileName}`, (req, res) => {
+      res.sendFile(path.join(__dirname, fileName));
+    });
+  }
+  // 根路徑回首頁（等同舊 express.static 的 index 行為）。
+  app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+  });
 
   return app;
 }

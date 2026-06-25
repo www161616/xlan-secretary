@@ -1,5 +1,25 @@
+# 不打進 image 的東西（縮小 build context、避免把祕密與本機工具狀態帶進映像）。
+# 注意：package-lock.json 必須保留（npm ci 需要它），故不要在此排除 lock。
+
+# 相依與版控
 node_modules
 .git
+.gitignore
+
+# 測試（image 內不需要）
 test
+
+# 祕密與環境檔（.env 與所有 .env.* 變體都不可進 image）
 .env
+.env.*
+
+# 本機部署／工具狀態
+.claude/
+.vercel
+.vercel/
+.vercel*
+
+# 文件（含 CLAUDE.md / AGENTS.md / 其餘 .md）
 *.md
+CLAUDE.md
+AGENTS.md
